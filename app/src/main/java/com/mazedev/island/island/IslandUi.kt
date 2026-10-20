@@ -33,6 +33,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -108,6 +109,7 @@ import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
 import com.mazedev.island.underStatusBar
 import com.mazedev.island.R
+import com.mazedev.island.media.MediaListenerService
 import com.mazedev.island.media.MediaRepository
 import com.mazedev.island.media.LiveActivity
 import com.mazedev.island.media.MediaState
@@ -121,6 +123,10 @@ import com.mazedev.island.util.Controls
 import com.mazedev.island.util.sendCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlin.math.abs
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.animation.core.Animatable
 import kotlinx.coroutines.withContext
 
 private enum class Face { COLLAPSED, EXPANDED, NOTIF, FLASHLIGHT, ALERT, ACTIVITY, VIDEO }
@@ -275,9 +281,72 @@ fun IslandUi(controller: IslandController) {
                 }
             }
         }
+        // Swipe a notification away: sideways dismisses it, up just tucks it back into the island.
+        val swipeScope = rememberCoroutineScope()
+        val dragX = remember { Animatable(0f) }
+        val dragY = remember { Animatable(0f) }
+        val swipeAlpha = remember { Animatable(1f) }
+        val notifMode = mode as? IslandMode.Notification
+        LaunchedEffect(notifMode?.event?.key) {
+            dragX.snapTo(0f)
+            dragY.snapTo(0f)
+        }
+        val widthPx = with(density) { cardWidth.toPx() }
+        val swipeModifier = if (notifMode != null && !notifMode.replying) {
+            Modifier.pointerInput(notifMode.event.key) {
+                detectDragGestures(
+                    onDragStart = { controller.keepOpen(10_000) },
+                    onDragCancel = {
+                        swipeScope.launch { dragX.animateTo(0f, spring()) }
+                        swipeScope.launch { dragY.animateTo(0f, spring()) }
+                    },
+                    onDragEnd = {
+                        val key = notifMode.event.key
+                        when {
+                            abs(dragX.value) > widthPx * 0.28f -> swipeScope.launch {
+                                // Fly out to the side, remove it, then let the pill fade back in.
+                                val target = if (dragX.value > 0) widthPx * 1.1f else -widthPx * 1.1f
+                                launch { swipeAlpha.animateTo(0f, tween(160)) }
+                                dragX.animateTo(target, tween(180))
+                                MediaListenerService.dismissNotification(key)
+                                controller.dismiss()
+                                dragX.snapTo(0f)
+                                dragY.snapTo(0f)
+                                swipeAlpha.animateTo(1f, tween(260))
+                            }
+                            dragY.value < -with(density) { 36.dp.toPx() } -> swipeScope.launch {
+                                controller.dismiss()
+                                dragY.animateTo(0f, tween(220))
+                                dragX.snapTo(0f)
+                            }
+                            else -> {
+                                swipeScope.launch { dragX.animateTo(0f, spring(dampingRatio = 0.7f)) }
+                                swipeScope.launch { dragY.animateTo(0f, spring(dampingRatio = 0.7f)) }
+                                controller.keepOpen(4_000)
+                            }
+                        }
+                    },
+                ) { change, amount ->
+                    change.consume()
+                    swipeScope.launch {
+                        dragX.snapTo(dragX.value + amount.x)
+                        // Up moves freely; down only stretches a little.
+                        val y = dragY.value + amount.y
+                        dragY.snapTo(if (y > 0) y * 0.3f else y)
+                    }
+                }
+            }
+        } else Modifier
         Box(
             modifier = Modifier
                 .offset(x = nudgeX)
+                .graphicsLayer {
+                    translationX = dragX.value
+                    translationY = dragY.value
+                    val fade = (abs(dragX.value) / widthPx).coerceIn(0f, 1f)
+                    alpha = swipeAlpha.value * (1f - fade * 0.7f)
+                }
+                .then(swipeModifier)
                 .size(w, h)
                 // White glow while adjusting the island in Settings, so you can see where it is.
                 .drawBehind {

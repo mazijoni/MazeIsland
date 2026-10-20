@@ -745,6 +745,7 @@ private fun GesturesCard() {
         GestureLine("Tap", "Open the island (music, timer, or app menu)")
         GestureLine("Long press", "Open the app that's showing (like tapping on iPhone)")
         GestureLine("Swipe left / right", "Next / previous song while music plays")
+        GestureLine("Swipe a notification", "Sideways removes it, up tucks it away")
         GestureLine("📌 on the music card", "Pin it open (tap again to unpin)")
         GestureLine("⧉ on the music card", "Pop the video out into a floating window")
         GestureLine("Share → Play in island", "Plays a YouTube video inside the island")

@@ -58,6 +58,7 @@ class MediaListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        instance = this
         Prefs.init(this)
         val msm = getSystemService(MediaSessionManager::class.java)
         sessionManager = msm
@@ -71,6 +72,7 @@ class MediaListenerService : NotificationListenerService() {
     }
 
     override fun onListenerDisconnected() {
+        if (instance === this) instance = null
         cleanup()
         super.onListenerDisconnected()
     }
@@ -416,6 +418,13 @@ class MediaListenerService : NotificationListenerService() {
 
     companion object {
         private const val TAG = "MediaListener"
+
+        @Volatile private var instance: MediaListenerService? = null
+
+        /** Removes a notification for good (swiped away in the island). */
+        fun dismissNotification(key: String) {
+            runCatching { instance?.cancelNotification(key) }
+        }
 
         val BROWSERS = setOf(
             "com.android.chrome", "com.chrome.beta", "com.chrome.dev", "com.chrome.canary",
