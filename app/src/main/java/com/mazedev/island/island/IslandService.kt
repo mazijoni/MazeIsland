@@ -21,6 +21,7 @@ import com.mazedev.island.IslandPreview
 import com.mazedev.island.PreviewMode
 import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
+import com.mazedev.island.underStatusBar
 import com.mazedev.island.media.MediaRepository
 import com.mazedev.island.util.BtDevices
 import com.mazedev.island.util.Controls
