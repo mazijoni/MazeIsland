@@ -4,6 +4,9 @@
 
     <!-- Fetches playlist name + cover from Spotify's public oEmbed endpoint -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Wi-Fi / mobile signal icons in the island's status row -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <!-- Optional, granted once over adb: lets the app turn off the system's own notification
          pop-ups so the island replaces them. -->

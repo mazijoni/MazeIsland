@@ -369,6 +369,11 @@ private fun IslandCard() {
             IslandPreview.show(PreviewMode.EXPANDED)
             IslandPreview.release(2_500)
         }
+        if (cfg.statusInIsland) {
+            LabeledSlider("Clock & battery up / down", cfg.statusOffsetY, -10f..12f, PreviewMode.EXPANDED) { v ->
+                Prefs.updateIsland { it.copy(statusOffsetY = v) }
+            }
+        }
         ToggleRow("Pop up all notifications (not just messages)", cfg.showAllNotifications) { v ->
             Prefs.updateIsland { it.copy(showAllNotifications = v) }
         }
