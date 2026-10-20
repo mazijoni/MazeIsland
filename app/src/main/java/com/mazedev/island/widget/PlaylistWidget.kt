@@ -40,6 +40,7 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
+import com.mazedev.island.Prefs
 import com.mazedev.island.R
 import com.mazedev.island.media.MediaRepository
 import com.mazedev.island.ui.MainActivity
@@ -55,7 +56,13 @@ class PlaylistWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val snap = withContext(Dispatchers.IO) { WidgetStore.load(context) }
-        provideContent { WidgetContent(context, snap) }
+        // Someone rang the doorbell in the last couple of minutes → show the camera snapshot instead.
+        val door = if (Prefs.island.value.doorbellTakeover) {
+            withContext(Dispatchers.IO) { DoorbellStore.recent(context) }
+        } else null
+        provideContent {
+            if (door != null) DoorbellContent(context, door, recentBadge = true) else WidgetContent(context, snap)
+        }
     }
 }
 

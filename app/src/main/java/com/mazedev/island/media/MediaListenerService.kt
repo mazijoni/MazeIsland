@@ -18,6 +18,8 @@ import androidx.glance.appwidget.updateAll
 import com.mazedev.island.Prefs
 import com.mazedev.island.util.Apps
 import com.mazedev.island.util.BitmapUtils
+import com.mazedev.island.widget.DoorbellStore
+import com.mazedev.island.widget.DoorbellWidget
 import com.mazedev.island.widget.PlaylistWidget
 import com.mazedev.island.widget.WidgetStore
 import kotlinx.coroutines.CoroutineScope
@@ -196,19 +198,22 @@ class MediaListenerService : NotificationListenerService() {
         if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
         if (n.category in IGNORED_CATEGORIES) return
 
+        val isDoorbell = sbn.packageName in DoorbellStore.CAMERA_APPS
         val isMessage = n.category == Notification.CATEGORY_MESSAGE ||
             n.category == Notification.CATEGORY_EMAIL ||
             n.category == Notification.CATEGORY_CALL ||
             extras.containsKey(Notification.EXTRA_MESSAGES)
-        if (!isMessage && !Prefs.island.value.showAllNotifications) return
+        if (!isMessage && !isDoorbell && !Prefs.island.value.showAllNotifications) return
 
         val title = (extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)
             ?: extras.getCharSequence(Notification.EXTRA_TITLE))?.toString() ?: return
         val text = (extras.getCharSequence(Notification.EXTRA_TEXT)
             ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString().orEmpty()
+        val picture = extractPicture(n, isDoorbell)
 
         // Apps often re-post the same notification; only pop when the content changed.
-        val fingerprint = "$title|$text"
+        // (Camera apps post first, then re-post once the snapshot is ready, so that counts as a change.)
+        val fingerprint = "$title|$text|${picture != null}"
         if (lastShown[sbn.key] == fingerprint) return
         if (lastShown.size > 200) lastShown.clear()
         lastShown[sbn.key] = fingerprint
@@ -217,6 +222,8 @@ class MediaListenerService : NotificationListenerService() {
             n.getLargeIcon()?.loadDrawable(this)?.toBitmap(96, 96)
                 ?: packageManager.getApplicationIcon(sbn.packageName).toBitmap(96, 96)
         }.getOrNull()
+
+        if (isDoorbell && picture != null) onDoorbellEvent(title, text, picture)
 
         MediaRepository.emitNotification(
             NotifEvent(
@@ -228,8 +235,38 @@ class MediaListenerService : NotificationListenerService() {
                 icon = icon,
                 contentIntent = n.contentIntent,
                 replyAction = findReplyAction(n),
+                picture = picture,
             )
         )
+    }
+
+    /** The big picture of a notification; for camera apps also their large icon (often the snapshot). */
+    @Suppress("DEPRECATION")
+    private fun extractPicture(n: Notification, cameraApp: Boolean): Bitmap? {
+        val extras = n.extras
+        val bmp: Bitmap? = runCatching { extras.getParcelable<Bitmap>(Notification.EXTRA_PICTURE) }.getOrNull()
+            ?: if (Build.VERSION.SDK_INT >= 31) {
+                runCatching {
+                    extras.getParcelable<android.graphics.drawable.Icon>(Notification.EXTRA_PICTURE_ICON)
+                        ?.loadDrawable(this)?.toBitmap()
+                }.getOrNull()
+            } else null
+        val picture = bmp ?: if (cameraApp) {
+            runCatching { n.getLargeIcon()?.loadDrawable(this)?.toBitmap() }.getOrNull()
+                ?.takeIf { it.width >= 200 } // a real snapshot, not a small avatar
+        } else null
+        return picture?.let { runCatching { BitmapUtils.scaleToMax(it, 720) }.getOrNull() }
+    }
+
+    private fun onDoorbellEvent(title: String, text: String, picture: Bitmap?) {
+        scope.launch {
+            withContext(Dispatchers.IO) { DoorbellStore.save(applicationContext, title, text, picture) }
+            runCatching { DoorbellWidget().updateAll(applicationContext) }
+            runCatching { PlaylistWidget().updateAll(applicationContext) }
+            // The Spotify widget only shows the doorbell for a couple of minutes; switch it back after.
+            delay(DoorbellStore.TAKEOVER_MS + 1_000)
+            runCatching { PlaylistWidget().updateAll(applicationContext) }
+        }
     }
 
     private fun findReplyAction(n: Notification): Notification.Action? {

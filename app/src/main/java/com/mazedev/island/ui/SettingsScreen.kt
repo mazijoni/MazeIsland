@@ -75,12 +75,15 @@ import com.mazedev.island.media.MediaRepository
 import com.mazedev.island.util.AppEntry
 import com.mazedev.island.util.Apps
 import com.mazedev.island.util.Permissions
+import com.mazedev.island.widget.DoorbellStore
+import com.mazedev.island.widget.DoorbellWidgetReceiver
 import com.mazedev.island.widget.PlaylistLoader
 import com.mazedev.island.widget.PlaylistWidgetReceiver
 import com.mazedev.island.widget.WidgetStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 private val Muted = Color(0xFF9A9AA6)
 
@@ -102,6 +105,7 @@ fun SettingsScreen() {
             item { NowPlayingCard() }
             item { WidgetCard() }
             item { IslandCard() }
+            item { DoorbellCard() }
         }
     }
 }
@@ -383,6 +387,24 @@ private fun IslandCard() {
         }
         ToggleRow("Themed icons (match Pixel's themed icons)", cfg.themedIcons) { v ->
             Prefs.updateIsland { it.copy(themedIcons = v) }
+            flashAppsPreview()
+        }
+        ToggleRow("Black & white icons", cfg.appGrayscale) { v ->
+            Prefs.updateIsland { it.copy(appGrayscale = v) }
+            flashAppsPreview()
+        }
+        ToggleRow("Show app names", cfg.appLabels) { v ->
+            Prefs.updateIsland { it.copy(appLabels = v) }
+            flashAppsPreview()
+        }
+        LabeledSlider("Icon brightness", cfg.appBrightness * 100f, 30f..120f, PreviewMode.APPS, unit = "%") { v ->
+            Prefs.updateIsland { it.copy(appBrightness = v / 100f) }
+        }
+        LabeledSlider("Icon size", cfg.appIconSize, 32f..60f, PreviewMode.APPS) { v ->
+            Prefs.updateIsland { it.copy(appIconSize = v) }
+        }
+        LabeledSlider("Icons per row", cfg.appColumns.toFloat(), 3f..7f, PreviewMode.APPS, unit = "", steps = 3) { v ->
+            Prefs.updateIsland { it.copy(appColumns = v.roundToInt()) }
         }
     }
 
@@ -471,12 +493,14 @@ private fun LabeledSlider(
     value: Float,
     range: ClosedFloatingPointRange<Float>,
     preview: PreviewMode = PreviewMode.GLOW,
+    unit: String = " dp",
+    steps: Int = 0,
     onChange: (Float) -> Unit,
 ) {
     Column(Modifier.padding(top = 6.dp)) {
         Row {
             Text(label, fontSize = 13.sp, modifier = Modifier.weight(1f))
-            Text("${value.toInt()} dp", fontSize = 13.sp, color = Muted)
+            Text("${value.roundToInt()}$unit", fontSize = 13.sp, color = Muted)
         }
         Slider(
             value = value,
@@ -486,6 +510,7 @@ private fun LabeledSlider(
             },
             onValueChangeFinished = { IslandPreview.release() },
             valueRange = range,
+            steps = steps,
         )
     }
 }
@@ -535,4 +560,64 @@ private fun AppPickerDialog(
         confirmButton = { TextButton(onClick = { onSave(chosen.toList()) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+/** Briefly opens the island on the app tab so a toggle's effect is visible. */
+private fun flashAppsPreview() {
+    IslandPreview.show(PreviewMode.APPS)
+    IslandPreview.release(2_000)
+}
+
+// ---------------------------------------------------------------- doorbell
+
+@Composable
+private fun DoorbellCard() {
+    val context = LocalContext.current
+    val cfg by Prefs.island.collectAsState()
+    var latest by remember { mutableStateOf<DoorbellStore.Event?>(null) }
+    LifecycleResumeEffect(Unit) {
+        latest = DoorbellStore.latest(context)
+        onPauseOrDispose { }
+    }
+    val hasHomeApp = remember { DoorbellStore.openAppIntent(context) != null }
+
+    Section("Doorbell camera") {
+        Text(
+            "Uses the snapshots the Google Home app attaches to doorbell and camera alerts, so there's " +
+                "nothing to link. Make sure Google Home's doorbell notifications are on.",
+            color = Muted,
+            fontSize = 13.sp,
+        )
+        if (!hasHomeApp) {
+            Spacer(Modifier.height(6.dp))
+            Text("Google Home app not found on this phone.", color = Color(0xFFFFB4A9), fontSize = 13.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        ToggleRow("Show on the Spotify widget for 2 min after a ring", cfg.doorbellTakeover) { v ->
+            Prefs.updateIsland { it.copy(doorbellTakeover = v) }
+        }
+        latest?.let { e ->
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CoverImage(e.snapshot, 56)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Last event", color = Muted, fontSize = 12.sp)
+                    Text(e.title.ifBlank { "Doorbell" }, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    Text(
+                        android.text.format.DateFormat.getTimeFormat(context).format(java.util.Date(e.time)),
+                        color = Muted,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        FilledTonalButton(onClick = {
+            val awm = AppWidgetManager.getInstance(context)
+            if (awm.isRequestPinAppWidgetSupported) {
+                awm.requestPinAppWidget(ComponentName(context, DoorbellWidgetReceiver::class.java), null, null)
+            }
+        }) { Text("Add doorbell widget") }
+    }
 }

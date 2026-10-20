@@ -68,7 +68,10 @@ class IslandController(private val scope: CoroutineScope) {
     /** Opens without the auto-close timer (used by the Settings preview). */
     fun holdExpanded(startOnApps: Boolean) {
         timer?.cancel()
-        if (_mode.value !is IslandMode.Expanded) set(IslandMode.Expanded(startOnApps))
+        val current = _mode.value
+        if (current !is IslandMode.Expanded || current.startOnApps != startOnApps) {
+            set(IslandMode.Expanded(startOnApps))
+        }
     }
 
     fun collapse() {

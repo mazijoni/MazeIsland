@@ -91,7 +91,7 @@ class IslandService : AccessibilityService() {
         touchTarget = tapView
 
         val collapsedFlow = controller.mode.map { it == IslandMode.Collapsed }.distinctUntilChanged()
-        val previewOpen = IslandPreview.mode.map { it == PreviewMode.EXPANDED }
+        val previewOpen = IslandPreview.mode.map { it == PreviewMode.EXPANDED || it == PreviewMode.APPS }
 
         // Display window: only its touch/focus flags change (never its size while animating).
         scope.launch {
@@ -120,8 +120,9 @@ class IslandService : AccessibilityService() {
         scope.launch {
             var openedByPreview = false
             IslandPreview.mode.collect { m ->
-                if (m == PreviewMode.EXPANDED) {
-                    controller.holdExpanded(startOnApps = MediaRepository.sessions.value.none { it.isRecent() })
+                if (m == PreviewMode.EXPANDED || m == PreviewMode.APPS) {
+                    val apps = m == PreviewMode.APPS || MediaRepository.sessions.value.none { it.isRecent() }
+                    controller.holdExpanded(startOnApps = apps)
                     openedByPreview = true
                 } else if (openedByPreview) {
                     openedByPreview = false
@@ -261,7 +262,7 @@ class IslandService : AccessibilityService() {
         const val MINI_EXTRA_DP = 96f
 
         /** Room below the camera for the expanded card (pager + dots, or a reply box). */
-        const val EXPANDED_CONTENT_DP = 210f
+        const val EXPANDED_CONTENT_DP = 360f
 
         fun expandedWidthDp(screenWidthDp: Int, marginDp: Float): Float =
             min(screenWidthDp - 2f * marginDp, 480f)

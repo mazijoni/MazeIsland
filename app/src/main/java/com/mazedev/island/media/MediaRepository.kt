@@ -57,6 +57,8 @@ data class NotifEvent(
     val contentIntent: PendingIntent?,
     /** Non-null if the notification has an inline "Reply" action. */
     val replyAction: Notification.Action?,
+    /** Big picture attached to the notification (e.g. a doorbell camera snapshot). */
+    val picture: Bitmap? = null,
     val postedAt: Long = System.currentTimeMillis(),
 )
 

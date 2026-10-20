@@ -18,6 +18,8 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
         <package android:name="com.spotify.music" />
+        <package android:name="com.google.android.apps.chromecast.app" />
+        <package android:name="com.nest.android" />
     </queries>
 
     <application
@@ -72,6 +74,19 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/playlist_widget_info" />
+        </receiver>
+
+        <!-- Google Home doorbell snapshot widget -->
+        <receiver
+            android:name=".widget.DoorbellWidgetReceiver"
+            android:exported="true"
+            android:label="@string/doorbell_widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/doorbell_widget_info" />
         </receiver>
     </application>
 </manifest>

@@ -3,9 +3,7 @@ package com.mazedev.island.island
 import android.content.Intent
 import android.graphics.Bitmap
 import androidx.annotation.DrawableRes
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
@@ -15,9 +13,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -26,6 +21,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -36,6 +32,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -46,6 +43,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -54,6 +52,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
@@ -62,6 +62,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
@@ -75,7 +76,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mazedev.island.IslandConfig
@@ -99,14 +99,23 @@ private enum class Face { IDLE, MINI, EXPANDED, NOTIF }
 private val Dim = Color(0xFFA6A6AE)
 private val Soft = Color(0xE0FFFFFF)
 
-/** Height of the swipeable media/app area in the expanded card. */
-private val PAGE_HEIGHT = 150.dp
+/** Height of the swipeable media/app area: fits the media controls, or the app grid if taller. */
+private fun pageHeight(cfg: IslandConfig): Dp {
+    val cols = cfg.appColumns.coerceIn(3, 7)
+    val tiles = minOf(cfg.menuApps.size, cols * 2 - 1) + 1 // + Settings tile
+    val rows = (tiles + cols - 1) / cols
+    val tileH = cfg.appIconSize + (if (cfg.appLabels) 19f else 0f)
+    val grid = rows * tileH + (rows - 1) * 10f + 14f
+    return maxOf(150f, grid).dp
+}
 
 @Composable
 fun IslandUi(controller: IslandController) {
     val cfg by Prefs.island.collectAsState()
     val media by MediaRepository.media.collectAsState()
+    val sessions by MediaRepository.sessions.collectAsState()
     val mode by controller.mode.collectAsState()
+    val density = LocalDensity.current
 
     val face = when (mode) {
         is IslandMode.Notification -> Face.NOTIF
@@ -115,6 +124,34 @@ fun IslandUi(controller: IslandController) {
     }
     val collapsed = face == Face.IDLE || face == Face.MINI
     val cardWidth = IslandService.expandedWidthDp(LocalConfiguration.current.screenWidthDp, cfg.expandedMargin).dp
+    val pageH = pageHeight(cfg)
+    var notifHeightPx by remember { mutableStateOf(0) }
+
+    // Every state has an exact size. The black shape animates between them, always centered on
+    // the camera (top center); the content inside just crossfades. Nothing is ever positioned
+    // from a corner, so nothing can slide in from the side.
+    val pillH = cfg.height.dp
+    val targetW = when (face) {
+        Face.IDLE -> if (cfg.style == IslandStyle.HIDDEN) pillH else cfg.width.dp
+        Face.MINI -> cfg.width.dp + IslandService.MINI_EXTRA_DP.dp
+        Face.EXPANDED, Face.NOTIF -> cardWidth
+    }
+    val targetH = when (face) {
+        Face.IDLE, Face.MINI -> pillH
+        Face.EXPANDED -> pillH + 2.dp + pageH + (if (sessions.isNotEmpty()) 12.dp else 0.dp) + 10.dp
+        Face.NOTIF -> if (notifHeightPx > 0) with(density) { notifHeightPx.toDp() } else pillH + 92.dp
+    }
+    // Opening gets a little bounce; closing settles without overshoot, so it never dips below the pill size.
+    val sizeSpec = if (collapsed) spring<Dp>(dampingRatio = 1f, stiffness = 420f)
+    else spring(dampingRatio = 0.8f, stiffness = 360f)
+    val w by animateDpAsState(targetW, sizeSpec, label = "w")
+    val h by animateDpAsState(targetH, sizeSpec, label = "h")
+    val corner by animateDpAsState(
+        targetValue = if (collapsed) pillH / 2 else cfg.expandedCorner.dp,
+        animationSpec = sizeSpec,
+        label = "corner",
+    )
+
     val preview by IslandPreview.mode.collectAsState()
     val glow by animateFloatAsState(
         targetValue = if (preview != PreviewMode.NONE) 1f else 0f,
@@ -129,13 +166,9 @@ fun IslandUi(controller: IslandController) {
             .then(if (collapsed) Modifier else Modifier.noRippleClick { controller.collapse() }),
         contentAlignment = Alignment.TopCenter,
     ) {
-        val corner by animateDpAsState(
-            targetValue = if (collapsed) (cfg.height / 2).dp else cfg.expandedCorner.dp,
-            animationSpec = spring(dampingRatio = 0.85f, stiffness = 380f),
-            label = "corner",
-        )
         Box(
             modifier = Modifier
+                .size(w, h)
                 // White glow while adjusting the island in Settings, so you can see where it is.
                 .drawBehind {
                     if (glow <= 0f) return@drawBehind
@@ -151,40 +184,38 @@ fun IslandUi(controller: IslandController) {
                     }
                 }
                 .clip(RoundedCornerShape(corner))
-                .background(Color.Black),
+                .background(Color.Black)
+                .then(if (collapsed) Modifier else Modifier.noRippleClick { controller.poke() }),
         ) {
-            AnimatedContent(
+            Crossfade(
                 targetState = face,
-                // Grow and shrink from the camera (top center), not from the left edge.
-                contentAlignment = Alignment.TopCenter,
-                transitionSpec = {
-                    // Only fades + a size morph: no scale-downs, and the pill never goes below its set size.
-                    fadeIn(tween(170, delayMillis = 70))
-                        .togetherWith(fadeOut(tween(90)))
-                        .using(
-                            SizeTransform(clip = true) { _, _ ->
-                                spring<IntSize>(dampingRatio = 0.82f, stiffness = 360f)
-                            }
-                        )
-                },
-                label = "island",
+                animationSpec = tween(180),
+                label = "face",
+                modifier = Modifier.fillMaxSize(),
             ) { f ->
-                when (f) {
-                    Face.IDLE -> IdlePill(cfg) {
-                        val anyRecent = MediaRepository.sessions.value.any { it.isRecent() }
-                        controller.expand(startOnApps = !anyRecent)
-                    }
-                    Face.MINI -> MiniMedia(cfg, media) { controller.expand(startOnApps = false) }
-                    Face.EXPANDED -> ExpandedCard(
-                        cfg = cfg,
-                        width = cardWidth,
-                        startOnApps = (mode as? IslandMode.Expanded)?.startOnApps ?: false,
-                        controller = controller,
-                    )
-                    Face.NOTIF -> {
-                        val n = mode as? IslandMode.Notification
-                        if (n != null) NotificationCard(cfg, n, cardWidth, controller)
-                        else Box(Modifier.size(cardWidth, cfg.height.dp))
+                // Each face is laid out at its own natural size, centered at the top, and clipped by
+                // the animated shape: it gets revealed from the camera outwards.
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .wrapContentSize(Alignment.TopCenter, unbounded = true)
+                ) {
+                    when (f) {
+                        Face.IDLE -> Box(Modifier.size(targetW.coerceAtLeast(pillH), pillH))
+                        Face.MINI -> MiniMedia(cfg, media)
+                        Face.EXPANDED -> {
+                            val startOnApps = (mode as? IslandMode.Expanded)?.startOnApps ?: false
+                            key(startOnApps) { ExpandedCard(cfg, cardWidth, pageH, startOnApps, controller) }
+                        }
+                        Face.NOTIF -> {
+                            val n = mode as? IslandMode.Notification
+                            if (n != null) {
+                                NotificationCard(
+                                    cfg, n, cardWidth, controller,
+                                    Modifier.onSizeChanged { notifHeightPx = it.height },
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -195,23 +226,11 @@ fun IslandUi(controller: IslandController) {
 // --------------------------------------------------------------- collapsed
 
 @Composable
-private fun IdlePill(cfg: IslandConfig, onTap: () -> Unit) {
-    // "Hidden" style: just a dot the size of the camera, so it looks like nothing is there.
-    val w = if (cfg.style == IslandStyle.HIDDEN) cfg.height.dp else cfg.width.dp
-    Box(
-        Modifier
-            .size(w, cfg.height.dp)
-            .noRippleClick(onTap)
-    )
-}
-
-@Composable
-private fun MiniMedia(cfg: IslandConfig, media: MediaState?, onTap: () -> Unit) {
+private fun MiniMedia(cfg: IslandConfig, media: MediaState?) {
     val h = cfg.height.dp
     Row(
         modifier = Modifier
             .size(cfg.width.dp + IslandService.MINI_EXTRA_DP.dp, h)
-            .noRippleClick(onTap)
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -229,7 +248,7 @@ private fun MiniMedia(cfg: IslandConfig, media: MediaState?, onTap: () -> Unit) 
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ExpandedCard(cfg: IslandConfig, width: Dp, startOnApps: Boolean, controller: IslandController) {
+private fun ExpandedCard(cfg: IslandConfig, width: Dp, pageHeight: Dp, startOnApps: Boolean, controller: IslandController) {
     val sessions by MediaRepository.sessions.collectAsState()
     val appsPage = sessions.size
     val initialPage = remember {
@@ -242,11 +261,7 @@ private fun ExpandedCard(cfg: IslandConfig, width: Dp, startOnApps: Boolean, con
     val bg: Bitmap? = sessions.getOrNull(pager.currentPage)?.blurred
     val camera = cfg.height.dp
 
-    Box(
-        modifier = Modifier
-            .width(width)
-            .noRippleClick { controller.poke() }, // taps on the card itself don't close it
-    ) {
+    Box(modifier = Modifier.width(width)) {
         // Blurred cover behind the whole card…
         Crossfade(targetState = bg, animationSpec = tween(350), label = "bg", modifier = Modifier.matchParentSize()) { b ->
             if (b != null) {
@@ -300,12 +315,12 @@ private fun ExpandedCard(cfg: IslandConfig, width: Dp, startOnApps: Boolean, con
             Spacer(Modifier.height(camera + 2.dp)) // keep content below the camera hole
             HorizontalPager(
                 state = pager,
-                modifier = Modifier.fillMaxWidth().height(PAGE_HEIGHT),
+                modifier = Modifier.fillMaxWidth().height(pageHeight),
             ) { page ->
                 val s = sessions.getOrNull(page)
                 if (s != null) MediaPage(s, controller) else AppsPage(cfg, controller)
             }
-            PageDots(count = sessions.size + 1, current = pager.currentPage)
+            if (sessions.isNotEmpty()) PageDots(count = sessions.size + 1, current = pager.currentPage)
             Spacer(Modifier.height(10.dp))
         }
     }
@@ -370,8 +385,10 @@ private class MenuTile(val label: String, val icon: ImageBitmap?, val onClick: (
 @Composable
 private fun AppsPage(cfg: IslandConfig, controller: IslandController) {
     val context = LocalContext.current
-    val apps by produceState(initialValue = emptyList<AppEntry>(), cfg.menuApps, cfg.themedIcons) {
-        value = withContext(Dispatchers.IO) { Apps.load(context, cfg.menuApps.take(9), cfg.themedIcons) }
+    val cols = cfg.appColumns.coerceIn(3, 7)
+    val maxApps = cols * 2 - 1
+    val apps by produceState(initialValue = emptyList<AppEntry>(), cfg.menuApps, cfg.themedIcons, maxApps) {
+        value = withContext(Dispatchers.IO) { Apps.load(context, cfg.menuApps.take(maxApps), cfg.themedIcons) }
     }
     val tiles = apps.map { app ->
         MenuTile(app.label, app.icon) {
@@ -383,46 +400,60 @@ private fun AppsPage(cfg: IslandConfig, controller: IslandController) {
         controller.collapse()
     }
 
+    // Brightness + optional black & white, applied to every icon.
+    val filter = remember(cfg.appBrightness, cfg.appGrayscale) {
+        val m = ColorMatrix()
+        if (cfg.appGrayscale) m.setToSaturation(0f)
+        val b = cfg.appBrightness
+        m.timesAssign(ColorMatrix().apply { setToScale(b, b, b, 1f) })
+        ColorFilter.colorMatrix(m)
+    }
+    val iconSize = cfg.appIconSize.dp
+    val tileWidth = maxOf(iconSize + 12.dp, 52.dp)
+
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
     ) {
-        tiles.chunked(5).forEach { row ->
+        tiles.chunked(cols).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                row.forEach { AppTile(it) }
-                repeat(5 - row.size) { Spacer(Modifier.width(58.dp)) }
+                row.forEach { AppTile(it, iconSize, tileWidth, cfg.appLabels, filter) }
+                repeat(cols - row.size) { Spacer(Modifier.width(tileWidth)) }
             }
         }
     }
 }
 
 @Composable
-private fun AppTile(tile: MenuTile) {
+private fun AppTile(tile: MenuTile, iconSize: Dp, tileWidth: Dp, showLabel: Boolean, filter: ColorFilter) {
     Column(
-        modifier = Modifier.width(58.dp).noRippleClick(tile.onClick),
+        modifier = Modifier.width(tileWidth).noRippleClick(tile.onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         if (tile.icon != null) {
             Image(
                 bitmap = tile.icon,
                 contentDescription = tile.label,
-                modifier = Modifier.size(44.dp),
+                modifier = Modifier.size(iconSize),
+                colorFilter = filter,
             )
         } else {
             Box(
-                Modifier.size(44.dp).glass(CircleShape),
+                Modifier.size(iconSize).glass(CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Image(
                     painter = painterResource(R.drawable.ic_settings),
                     contentDescription = null,
-                    modifier = Modifier.size(22.dp),
+                    modifier = Modifier.size(iconSize / 2),
                     colorFilter = ColorFilter.tint(Soft),
                 )
             }
         }
-        Spacer(Modifier.height(4.dp))
-        Text(tile.label, color = Soft, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (showLabel) {
+            Spacer(Modifier.height(4.dp))
+            Text(tile.label, color = Soft, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
@@ -449,13 +480,19 @@ private fun PageDots(count: Int, current: Int) {
 // ------------------------------------------------------------ notification
 
 @Composable
-private fun NotificationCard(cfg: IslandConfig, n: IslandMode.Notification, width: Dp, controller: IslandController) {
+private fun NotificationCard(
+    cfg: IslandConfig,
+    n: IslandMode.Notification,
+    width: Dp,
+    controller: IslandController,
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     val event = n.event
     val canReply = event.replyAction != null
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .width(width)
             .padding(start = 14.dp, end = 14.dp, bottom = 14.dp, top = cfg.height.dp + 6.dp),
     ) {
@@ -515,6 +552,25 @@ private fun NotificationCard(cfg: IslandConfig, n: IslandMode.Notification, widt
                     Text("Reply", color = Soft, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
             }
+        }
+
+        // Camera snapshot (e.g. Google Home doorbell) or any picture notification.
+        val picture = event.picture
+        if (picture != null && !n.replying) {
+            Spacer(Modifier.height(10.dp))
+            Image(
+                bitmap = remember(picture) { picture.asImageBitmap() },
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .noRippleClick {
+                        event.contentIntent?.sendCompat()
+                        controller.collapse()
+                    },
+            )
         }
 
         if (n.replying && event.replyAction != null) {

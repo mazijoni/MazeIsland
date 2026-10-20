@@ -34,6 +34,14 @@ data class IslandConfig(
     val expandedCorner: Float = 30f,
     /** Use Material You themed icons (like the Pixel launcher's "Themed icons") in the app menu. */
     val themedIcons: Boolean = true,
+    /** App tab look. */
+    val appIconSize: Float = 44f,
+    val appColumns: Int = 5,
+    val appLabels: Boolean = true,
+    val appBrightness: Float = 1f,
+    val appGrayscale: Boolean = false,
+    /** Spotify widget switches to the doorbell snapshot for a couple of minutes after a ring. */
+    val doorbellTakeover: Boolean = true,
     val menuApps: List<String> = listOf("com.spotify.music"),
 )
 
@@ -58,6 +66,12 @@ object Prefs {
             expandedMargin = sp.getFloat("expMargin", d.expandedMargin),
             expandedCorner = sp.getFloat("expCorner", d.expandedCorner),
             themedIcons = sp.getBoolean("themedIcons", d.themedIcons),
+            appIconSize = sp.getFloat("appIconSize", d.appIconSize),
+            appColumns = sp.getInt("appColumns", d.appColumns),
+            appLabels = sp.getBoolean("appLabels", d.appLabels),
+            appBrightness = sp.getFloat("appBrightness", d.appBrightness),
+            appGrayscale = sp.getBoolean("appGrayscale", d.appGrayscale),
+            doorbellTakeover = sp.getBoolean("doorbellTakeover", d.doorbellTakeover),
             menuApps = sp.getString("menuApps", null)
                 ?.split(",")
                 ?.filter { it.isNotBlank() }
@@ -81,12 +95,27 @@ object Prefs {
             .putFloat("expMargin", c.expandedMargin)
             .putFloat("expCorner", c.expandedCorner)
             .putBoolean("themedIcons", c.themedIcons)
+            .putFloat("appIconSize", c.appIconSize)
+            .putInt("appColumns", c.appColumns)
+            .putBoolean("appLabels", c.appLabels)
+            .putFloat("appBrightness", c.appBrightness)
+            .putBoolean("appGrayscale", c.appGrayscale)
+            .putBoolean("doorbellTakeover", c.doorbellTakeover)
             .putString("menuApps", c.menuApps.joinToString(","))
             .apply()
     }
 }
 
-enum class PreviewMode { NONE, GLOW, EXPANDED }
+enum class PreviewMode {
+    NONE,
+    GLOW,
+
+    /** Hold the island open (on whatever tab fits). */
+    EXPANDED,
+
+    /** Hold the island open on the app tab. */
+    APPS,
+}
 
 /**
  * Live preview while adjusting the island in Settings: a white glow so you can see the pill,

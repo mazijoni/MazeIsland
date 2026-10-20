@@ -4,4 +4,6 @@
     <string name="island_service_description">Draws a Dynamic Island style pill around your camera that shows music, messages and an app menu. It does not read screen content.</string>
     <string name="widget_label">Spotify Playlist</string>
     <string name="widget_description">Your chosen playlist with the current song cover as the background.</string>
+    <string name="doorbell_widget_label">Doorbell camera</string>
+    <string name="doorbell_widget_description">Latest snapshot from your Google Home doorbell. Tap to open the live view.</string>
 </resources>
