@@ -4,6 +4,13 @@
 
     <!-- Fetches playlist name + cover from Spotify's public oEmbed endpoint -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Optional island tabs: weather (location), contacts (call/text), camera (mirror/selfie) -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <!-- Optional: draw the island under the real status bar -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Wi-Fi / mobile signal icons in the island's status row -->

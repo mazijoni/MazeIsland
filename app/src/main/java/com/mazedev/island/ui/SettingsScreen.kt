@@ -96,7 +96,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-private val Muted = Color(0xFF9A9AA6)
+/** Secondary text in the phone's own colors (Material You). */
+private val Muted: Color
+    @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
 
 @Composable
 fun SettingsScreen() {
@@ -116,6 +118,7 @@ fun SettingsScreen() {
             item { NowPlayingCard() }
             item { WidgetCard() }
             item { IslandCard() }
+            item { TabsCard() }
             item { GesturesCard() }
             item { LiveCard() }
             item { ControlsCard() }
@@ -245,7 +248,7 @@ private fun CoverImage(bitmap: Bitmap?, sizeDp: Int) {
             modifier = Modifier.size(sizeDp.dp).clip(RoundedCornerShape(12.dp)),
         )
     } else {
-        Box(Modifier.size(sizeDp.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF2A2A30)))
+        Box(Modifier.size(sizeDp.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant))
     }
 }
 
@@ -487,7 +490,7 @@ private fun PopupReplacementRow(enabled: Boolean) {
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF22222A))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(10.dp),
         )
         Spacer(Modifier.height(6.dp))
@@ -867,4 +870,77 @@ private fun RealStatusBarRow(enabled: Boolean) {
         color = Muted,
         fontSize = 12.sp,
     )
+}
+
+// -------------------------------------------------------------- extra tabs
+
+@Composable
+private fun TabsCard() {
+    val context = LocalContext.current
+    val cfg by Prefs.island.collectAsState()
+    fun has(p: String) = context.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+    val locationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        Prefs.updateIsland { c -> c.copy(tabWeather = true) }
+    }
+    val contactsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        Prefs.updateIsland { c -> c.copy(tabContacts = ok) }
+    }
+    val callLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        Prefs.updateIsland { c -> c.copy(tabCamera = ok) }
+    }
+    var city by remember { mutableStateOf(cfg.weatherCity) }
+
+    Section("Island tabs") {
+        Text("Extra pages you can swipe to after the app menu.", color = Muted, fontSize = 13.sp)
+        Spacer(Modifier.height(6.dp))
+
+        ToggleRow("Weather", cfg.tabWeather) { v ->
+            if (v && cfg.weatherCity.isBlank() && !has(Manifest.permission.ACCESS_COARSE_LOCATION)) {
+                locationLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            } else {
+                Prefs.updateIsland { it.copy(tabWeather = v) }
+            }
+        }
+        if (cfg.tabWeather) {
+            OutlinedTextField(
+                value = city,
+                onValueChange = {
+                    city = it
+                    Prefs.updateIsland { c -> c.copy(weatherCity = it.trim()) }
+                },
+                label = { Text("City (leave empty to use your location)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            )
+        }
+
+        ToggleRow("Contacts (call & text)", cfg.tabContacts) { v ->
+            if (v && !has(Manifest.permission.READ_CONTACTS)) contactsLauncher.launch(Manifest.permission.READ_CONTACTS)
+            else Prefs.updateIsland { it.copy(tabContacts = v) }
+        }
+        if (cfg.tabContacts && !has(Manifest.permission.CALL_PHONE)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Calls open the dialer first. Allow phone calls to call straight away.",
+                    color = Muted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { callLauncher.launch(Manifest.permission.CALL_PHONE) }) { Text("Allow") }
+            }
+        }
+
+        ToggleRow("Camera mirror & selfies", cfg.tabCamera) { v ->
+            if (v && !has(Manifest.permission.CAMERA)) cameraLauncher.launch(Manifest.permission.CAMERA)
+            else Prefs.updateIsland { it.copy(tabCamera = v) }
+        }
+        if (cfg.tabCamera) {
+            Text(
+                "Uses the front camera only while that tab is showing. Selfies go to Photos › Maze Island.",
+                color = Muted,
+                fontSize = 12.sp,
+            )
+        }
+    }
 }

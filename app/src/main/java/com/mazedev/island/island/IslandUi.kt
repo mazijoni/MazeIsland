@@ -125,8 +125,8 @@ import kotlinx.coroutines.withContext
 
 private enum class Face { COLLAPSED, EXPANDED, NOTIF, FLASHLIGHT, ALERT, ACTIVITY, VIDEO }
 
-private val Dim = Color(0xFFA6A6AE)
-private val Soft = Color(0xE0FFFFFF)
+internal val Dim = Color(0xFFA6A6AE)
+internal val Soft = Color(0xE0FFFFFF)
 
 /** What the app tab contains, derived from settings. */
 private class AppTab(cfg: IslandConfig) {
@@ -199,7 +199,8 @@ fun IslandUi(controller: IslandController) {
         Face.COLLAPSED -> pillH
         Face.ALERT -> pillH + 8.dp
         Face.FLASHLIGHT -> pillH + 158.dp
-        Face.EXPANDED -> pillH + 2.dp + pageH + (if (sessions.isNotEmpty()) 12.dp else 0.dp) + 10.dp
+        Face.EXPANDED -> pillH + 2.dp + pageH +
+            (if (sessions.size + 1 + listOf(cfg.tabWeather, cfg.tabContacts, cfg.tabCamera).count { it } > 1) 12.dp else 0.dp) + 10.dp
         Face.NOTIF, Face.ACTIVITY -> measured
         Face.VIDEO -> pillH + 6.dp + (cardWidth - 24.dp) * 9f / 16f + VIDEO_BAR_H
     }
@@ -957,7 +958,14 @@ private fun ExpandedCard(cfg: IslandConfig, width: Dp, pageHeight: Dp, startOnAp
         if (startOnApps) appsPage
         else sessions.indexOfFirst { it.isRecent() }.takeIf { it >= 0 } ?: 0
     }
-    val pager = rememberPagerState(initialPage = initialPage) { sessions.size + 1 }
+    val extras = buildList {
+        if (cfg.tabWeather) add(ExtraTab.WEATHER)
+        if (cfg.tabContacts) add(ExtraTab.CONTACTS)
+        if (cfg.tabCamera) add(ExtraTab.CAMERA)
+    }
+    // Pages: one per media app, then the app menu, then the optional tabs.
+    val pageCount = sessions.size + 1 + extras.size
+    val pager = rememberPagerState(initialPage = initialPage) { pageCount }
     LaunchedEffect(pager.currentPage) { controller.poke() }
 
     val bg: Bitmap? = sessions.getOrNull(pager.currentPage)?.blurred
@@ -1020,9 +1028,18 @@ private fun ExpandedCard(cfg: IslandConfig, width: Dp, pageHeight: Dp, startOnAp
                 modifier = Modifier.fillMaxWidth().height(pageHeight),
             ) { page ->
                 val s = sessions.getOrNull(page)
-                if (s != null) MediaPage(s, controller) else AppsPage(cfg, controller)
+                when {
+                    s != null -> MediaPage(s, controller)
+                    page == appsPage -> AppsPage(cfg, controller)
+                    else -> when (extras.getOrNull(page - appsPage - 1)) {
+                        ExtraTab.WEATHER -> WeatherPage(cfg)
+                        ExtraTab.CONTACTS -> ContactsPage(controller)
+                        ExtraTab.CAMERA -> CameraPage(active = pager.currentPage == page, controller = controller)
+                        null -> Unit
+                    }
+                }
             }
-            if (sessions.isNotEmpty()) PageDots(count = sessions.size + 1, current = pager.currentPage)
+            if (pageCount > 1) PageDots(count = pageCount, current = pager.currentPage)
             Spacer(Modifier.height(10.dp))
         }
     }
@@ -1701,7 +1718,7 @@ private fun Bars(color: Color, playing: Boolean, modifier: Modifier = Modifier) 
 
 /** Subtle frosted-glass circle button: translucent fill + hairline edge, no solid colors. */
 @Composable
-private fun GlassButton(@DrawableRes res: Int, size: Dp, strong: Boolean = false, onClick: () -> Unit) {
+internal fun GlassButton(@DrawableRes res: Int, size: Dp, strong: Boolean = false, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .size(size)
@@ -1718,14 +1735,14 @@ private fun GlassButton(@DrawableRes res: Int, size: Dp, strong: Boolean = false
     }
 }
 
-private fun Modifier.glass(shape: Shape, strong: Boolean = false): Modifier =
+internal fun Modifier.glass(shape: Shape, strong: Boolean = false): Modifier =
     this
         .clip(shape)
         .background(Color.White.copy(alpha = if (strong) 0.16f else 0.08f))
         .border(0.75.dp, Color.White.copy(alpha = if (strong) 0.22f else 0.12f), shape)
 
 @Composable
-private fun Modifier.noRippleClick(onClick: () -> Unit): Modifier =
+internal fun Modifier.noRippleClick(onClick: () -> Unit): Modifier =
     this.clickable(
         interactionSource = remember { MutableInteractionSource() },
         indication = null,

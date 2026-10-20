@@ -61,6 +61,12 @@ dependencies {
     implementation("androidx.compose.animation:animation")
     implementation("androidx.compose.material3:material3")
 
+    // Front camera mirror tab
+    val camerax = "1.3.4"
+    implementation("androidx.camera:camera-camera2:$camerax")
+    implementation("androidx.camera:camera-lifecycle:$camerax")
+    implementation("androidx.camera:camera-view:$camerax")
+
     // Home screen widget
     implementation("androidx.glance:glance-appwidget:1.1.0")
 }

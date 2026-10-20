@@ -66,6 +66,12 @@ data class IslandConfig(
     val statusOffsetY: Float = 2f,
     /** Draw the island underneath Android's status bar so the real clock/battery show on top. */
     val realStatusBar: Boolean = false,
+    /** Optional tabs in the open island. */
+    val tabWeather: Boolean = false,
+    val tabContacts: Boolean = false,
+    val tabCamera: Boolean = false,
+    /** Weather for this city instead of the phone's location (blank = use location). */
+    val weatherCity: String = "",
     val menuApps: List<String> = listOf("com.spotify.music"),
 )
 
@@ -109,6 +115,10 @@ object Prefs {
             statusInIsland = sp.getBoolean("statusInIsland", d.statusInIsland),
             statusOffsetY = sp.getFloat("statusOffsetY", d.statusOffsetY),
             realStatusBar = sp.getBoolean("realStatusBar", d.realStatusBar),
+            tabWeather = sp.getBoolean("tabWeather", d.tabWeather),
+            tabContacts = sp.getBoolean("tabContacts", d.tabContacts),
+            tabCamera = sp.getBoolean("tabCamera", d.tabCamera),
+            weatherCity = sp.getString("weatherCity", d.weatherCity) ?: "",
             menuApps = sp.getString("menuApps", null)
                 ?.split(",")
                 ?.filter { it.isNotBlank() }
@@ -151,6 +161,10 @@ object Prefs {
             .putBoolean("statusInIsland", c.statusInIsland)
             .putFloat("statusOffsetY", c.statusOffsetY)
             .putBoolean("realStatusBar", c.realStatusBar)
+            .putBoolean("tabWeather", c.tabWeather)
+            .putBoolean("tabContacts", c.tabContacts)
+            .putBoolean("tabCamera", c.tabCamera)
+            .putString("weatherCity", c.weatherCity)
             .putString("menuApps", c.menuApps.joinToString(","))
             .apply()
     }
