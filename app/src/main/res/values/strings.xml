@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Maze Island</string>
+    <string name="island_service_label">Maze Island – Dynamic Island</string>
+    <string name="island_service_description">Draws a Dynamic Island style pill around your camera that shows music, messages and an app menu. It does not read screen content.</string>
+    <string name="widget_label">Spotify Playlist</string>
+    <string name="widget_description">Your chosen playlist with the current song cover as the background.</string>
+</resources>
