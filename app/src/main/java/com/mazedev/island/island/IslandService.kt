@@ -14,6 +14,8 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.mazedev.island.IslandConfig
+import com.mazedev.island.IslandPreview
+import com.mazedev.island.PreviewMode
 import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
 import com.mazedev.island.media.MediaRepository
@@ -52,6 +54,7 @@ class IslandService : AccessibilityService() {
         val large: Boolean,
         val focusable: Boolean,
         val miniWide: Boolean,
+        val preview: Boolean = false,
     )
 
     override fun onServiceConnected() {
@@ -88,8 +91,10 @@ class IslandService : AccessibilityService() {
 
         // Window size/flags only change at the start of a grow and the end of a shrink, never per frame.
         scope.launch {
-            combine(Prefs.island, controller.windowLarge, controller.focusable, miniWide) { cfg, large, focus, wide ->
-                WindowState(cfg, large, focus, wide)
+            combine(
+                Prefs.island, controller.windowLarge, controller.focusable, miniWide, IslandPreview.mode,
+            ) { cfg, large, focus, wide, preview ->
+                WindowState(cfg, large, focus, wide, preview != PreviewMode.NONE)
             }
                 .distinctUntilChanged()
                 .collect { applyWindow(it) }
@@ -98,13 +103,33 @@ class IslandService : AccessibilityService() {
             Prefs.island.collect { cfg -> applyPopupSetting(cfg) }
         }
         scope.launch { MediaRepository.notifications.collect { controller.showNotification(it) } }
+
+        // Settings preview: hold the island open while the expanded-card sliders move.
+        scope.launch {
+            var openedByPreview = false
+            IslandPreview.mode.collect { m ->
+                if (m == PreviewMode.EXPANDED) {
+                    controller.holdExpanded(startOnApps = MediaRepository.sessions.value.none { it.isRecent() })
+                    openedByPreview = true
+                } else if (openedByPreview) {
+                    openedByPreview = false
+                    controller.collapse()
+                }
+            }
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         if (::controller.isInitialized) {
             applyWindow(
-                WindowState(Prefs.island.value, controller.windowLarge.value, controller.focusable.value, miniWide.value)
+                WindowState(
+                    Prefs.island.value,
+                    controller.windowLarge.value,
+                    controller.focusable.value,
+                    miniWide.value,
+                    IslandPreview.mode.value != PreviewMode.NONE,
+                )
             )
         }
     }
@@ -129,7 +154,7 @@ class IslandService : AccessibilityService() {
 
     private fun layoutParams(state: WindowState): WindowManager.LayoutParams {
         val cfg = state.cfg
-        val large = state.large
+        val large = state.large || state.preview // the preview glow needs room around the pill
         val focusable = state.focusable
         val density = resources.displayMetrics.density
         val pillHeightPx = (cfg.height * density).roundToInt()
@@ -140,7 +165,7 @@ class IslandService : AccessibilityService() {
         val widthPx: Int
         val heightPx: Int
         if (large) {
-            widthPx = (expandedWidthDp(screenWidthDp) * density).roundToInt()
+            widthPx = (expandedWidthDp(screenWidthDp, cfg.expandedMargin) * density).roundToInt()
             heightPx = ((cfg.height + EXPANDED_CONTENT_DP) * density).roundToInt()
         } else {
             // Exactly the pill's size, so the rest of the status bar stays touchable (shade pull-down).
@@ -218,6 +243,7 @@ class IslandService : AccessibilityService() {
         /** Room below the camera for the expanded card (pager + dots, or a reply box). */
         const val EXPANDED_CONTENT_DP = 210f
 
-        fun expandedWidthDp(screenWidthDp: Int): Float = min(screenWidthDp - 16, 400).toFloat()
+        fun expandedWidthDp(screenWidthDp: Int, marginDp: Float): Float =
+            min(screenWidthDp - 2f * marginDp, 480f)
     }
 }

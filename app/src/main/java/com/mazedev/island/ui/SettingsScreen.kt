@@ -66,7 +66,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.mazedev.island.IslandPreview
 import com.mazedev.island.IslandStyle
+import com.mazedev.island.PreviewMode
 import com.mazedev.island.Prefs
 import com.mazedev.island.util.HeadsUp
 import com.mazedev.island.media.MediaRepository
@@ -357,6 +359,16 @@ private fun IslandCard() {
         LabeledSlider("Width", cfg.width, 60f..240f) { v -> Prefs.updateIsland { it.copy(width = v) } }
         LabeledSlider("Height", cfg.height, 20f..60f) { v -> Prefs.updateIsland { it.copy(height = v) } }
 
+        Spacer(Modifier.height(10.dp))
+        Text("Expanded island", fontWeight = FontWeight.Medium)
+        Text("The island opens while you drag these.", color = Muted, fontSize = 12.sp)
+        LabeledSlider("Side padding", cfg.expandedMargin, 0f..48f, PreviewMode.EXPANDED) { v ->
+            Prefs.updateIsland { it.copy(expandedMargin = v) }
+        }
+        LabeledSlider("Corner bevel", cfg.expandedCorner, 8f..56f, PreviewMode.EXPANDED) { v ->
+            Prefs.updateIsland { it.copy(expandedCorner = v) }
+        }
+
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -369,11 +381,15 @@ private fun IslandCard() {
             }
             OutlinedButton(onClick = { picking = true }) { Text("Choose") }
         }
+        ToggleRow("Themed icons (match Pixel's themed icons)", cfg.themedIcons) { v ->
+            Prefs.updateIsland { it.copy(themedIcons = v) }
+        }
     }
 
     if (picking) {
         AppPickerDialog(
             selected = cfg.menuApps,
+            themed = cfg.themedIcons,
             onDismiss = { picking = false },
             onSave = { chosen ->
                 Prefs.updateIsland { it.copy(menuApps = chosen) }
@@ -454,6 +470,7 @@ private fun LabeledSlider(
     label: String,
     value: Float,
     range: ClosedFloatingPointRange<Float>,
+    preview: PreviewMode = PreviewMode.GLOW,
     onChange: (Float) -> Unit,
 ) {
     Column(Modifier.padding(top = 6.dp)) {
@@ -461,19 +478,28 @@ private fun LabeledSlider(
             Text(label, fontSize = 13.sp, modifier = Modifier.weight(1f))
             Text("${value.toInt()} dp", fontSize = 13.sp, color = Muted)
         }
-        Slider(value = value, onValueChange = onChange, valueRange = range)
+        Slider(
+            value = value,
+            onValueChange = {
+                IslandPreview.show(preview)
+                onChange(it)
+            },
+            onValueChangeFinished = { IslandPreview.release() },
+            valueRange = range,
+        )
     }
 }
 
 @Composable
 private fun AppPickerDialog(
     selected: List<String>,
+    themed: Boolean,
     onDismiss: () -> Unit,
     onSave: (List<String>) -> Unit,
 ) {
     val context = LocalContext.current
     val apps by produceState(initialValue = emptyList<AppEntry>()) {
-        value = withContext(Dispatchers.IO) { Apps.launchable(context) }
+        value = withContext(Dispatchers.IO) { Apps.launchable(context, themed) }
     }
     val chosen = remember { mutableStateListOf<String>().apply { addAll(selected) } }
 

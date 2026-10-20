@@ -9,6 +9,7 @@ import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -55,7 +56,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -76,6 +79,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mazedev.island.IslandConfig
+import com.mazedev.island.IslandPreview
+import com.mazedev.island.PreviewMode
 import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
 import com.mazedev.island.R
@@ -109,7 +114,13 @@ fun IslandUi(controller: IslandController) {
         IslandMode.Collapsed -> if (media?.isPlaying == true) Face.MINI else Face.IDLE
     }
     val collapsed = face == Face.IDLE || face == Face.MINI
-    val cardWidth = IslandService.expandedWidthDp(LocalConfiguration.current.screenWidthDp).dp
+    val cardWidth = IslandService.expandedWidthDp(LocalConfiguration.current.screenWidthDp, cfg.expandedMargin).dp
+    val preview by IslandPreview.mode.collectAsState()
+    val glow by animateFloatAsState(
+        targetValue = if (preview != PreviewMode.NONE) 1f else 0f,
+        animationSpec = tween(250),
+        label = "glow",
+    )
 
     // Window-sized layer. When expanded, tapping the empty area around the card closes it.
     Box(
@@ -119,17 +130,33 @@ fun IslandUi(controller: IslandController) {
         contentAlignment = Alignment.TopCenter,
     ) {
         val corner by animateDpAsState(
-            targetValue = if (collapsed) (cfg.height / 2).dp else 30.dp,
+            targetValue = if (collapsed) (cfg.height / 2).dp else cfg.expandedCorner.dp,
             animationSpec = spring(dampingRatio = 0.85f, stiffness = 380f),
             label = "corner",
         )
         Box(
             modifier = Modifier
+                // White glow while adjusting the island in Settings, so you can see where it is.
+                .drawBehind {
+                    if (glow <= 0f) return@drawBehind
+                    val r = corner.toPx()
+                    for (i in 1..8) {
+                        val grow = i * 2.5.dp.toPx()
+                        drawRoundRect(
+                            color = Color.White.copy(alpha = 0.10f * glow * (1f - i / 9f)),
+                            topLeft = Offset(-grow, -grow),
+                            size = Size(size.width + grow * 2, size.height + grow * 2),
+                            cornerRadius = CornerRadius(r + grow, r + grow),
+                        )
+                    }
+                }
                 .clip(RoundedCornerShape(corner))
                 .background(Color.Black),
         ) {
             AnimatedContent(
                 targetState = face,
+                // Grow and shrink from the camera (top center), not from the left edge.
+                contentAlignment = Alignment.TopCenter,
                 transitionSpec = {
                     // Only fades + a size morph: no scale-downs, and the pill never goes below its set size.
                     fadeIn(tween(170, delayMillis = 70))
@@ -343,8 +370,8 @@ private class MenuTile(val label: String, val icon: ImageBitmap?, val onClick: (
 @Composable
 private fun AppsPage(cfg: IslandConfig, controller: IslandController) {
     val context = LocalContext.current
-    val apps by produceState(initialValue = emptyList<AppEntry>(), cfg.menuApps) {
-        value = withContext(Dispatchers.IO) { Apps.load(context, cfg.menuApps.take(9)) }
+    val apps by produceState(initialValue = emptyList<AppEntry>(), cfg.menuApps, cfg.themedIcons) {
+        value = withContext(Dispatchers.IO) { Apps.load(context, cfg.menuApps.take(9), cfg.themedIcons) }
     }
     val tiles = apps.map { app ->
         MenuTile(app.label, app.icon) {
@@ -379,11 +406,11 @@ private fun AppTile(tile: MenuTile) {
             Image(
                 bitmap = tile.icon,
                 contentDescription = tile.label,
-                modifier = Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)),
+                modifier = Modifier.size(44.dp),
             )
         } else {
             Box(
-                Modifier.size(44.dp).glass(RoundedCornerShape(12.dp)),
+                Modifier.size(44.dp).glass(CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Image(

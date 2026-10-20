@@ -4,6 +4,11 @@ import android.app.ActivityOptions
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.drawable.AdaptiveIconDrawable
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.ui.graphics.ImageBitmap
@@ -17,30 +22,52 @@ data class AppEntry(val packageName: String, val label: String, val icon: ImageB
 object Apps {
 
     /** Every app with a launcher icon, sorted by name (for the menu picker). */
-    fun launchable(context: Context): List<AppEntry> {
+    fun launchable(context: Context, themed: Boolean = false): List<AppEntry> {
         val pm = context.packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         return pm.queryIntentActivities(intent, 0)
             .map { it.activityInfo.packageName }
             .distinct()
             .filter { it != context.packageName }
-            .mapNotNull { entry(context, it) }
+            .mapNotNull { entry(context, it, themed) }
             .sortedBy { it.label.lowercase() }
     }
 
     /** The chosen menu apps, in the order the user picked them. */
-    fun load(context: Context, packages: List<String>): List<AppEntry> =
-        packages.mapNotNull { entry(context, it) }
+    fun load(context: Context, packages: List<String>, themed: Boolean = false): List<AppEntry> =
+        packages.mapNotNull { entry(context, it, themed) }
 
-    private fun entry(context: Context, pkg: String): AppEntry? = runCatching {
+    private fun entry(context: Context, pkg: String, themed: Boolean): AppEntry? = runCatching {
         val pm = context.packageManager
         val info = pm.getApplicationInfo(pkg, 0)
+        val drawable = pm.getApplicationIcon(info)
+        val bitmap = (if (themed) themedIcon(context, drawable, ICON_PX) else null)
+            ?: drawable.toBitmap(ICON_PX, ICON_PX)
         AppEntry(
             packageName = pkg,
             label = pm.getApplicationLabel(info).toString(),
-            icon = pm.getApplicationIcon(info).toBitmap(96, 96).asImageBitmap(),
+            icon = bitmap.asImageBitmap(),
         )
     }.getOrNull()
+
+    private const val ICON_PX = 144
+
+    /**
+     * Recreates the Pixel launcher's "Themed icons": the app's monochrome icon layer tinted with
+     * your wallpaper (Material You) colors, in the system icon shape. Apps without a monochrome
+     * layer return null and keep their normal icon, exactly like on the home screen.
+     */
+    private fun themedIcon(context: Context, icon: Drawable, size: Int): Bitmap? {
+        if (Build.VERSION.SDK_INT < 33 || icon !is AdaptiveIconDrawable) return null
+        val mono = icon.monochrome ?: return null
+        val night = (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        val bg = context.getColor(if (night) android.R.color.system_neutral1_800 else android.R.color.system_accent1_100)
+        val fg = context.getColor(if (night) android.R.color.system_accent1_100 else android.R.color.system_neutral2_700)
+        val tinted = (mono.constantState?.newDrawable(context.resources) ?: mono).mutate()
+        tinted.setTint(fg)
+        return AdaptiveIconDrawable(ColorDrawable(bg), tinted).toBitmap(size, size)
+    }
 
     fun label(context: Context, pkg: String): String = runCatching {
         val pm = context.packageManager

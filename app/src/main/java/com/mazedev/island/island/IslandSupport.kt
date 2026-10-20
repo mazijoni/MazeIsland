@@ -65,6 +65,12 @@ class IslandController(private val scope: CoroutineScope) {
         autoCollapse(10_000)
     }
 
+    /** Opens without the auto-close timer (used by the Settings preview). */
+    fun holdExpanded(startOnApps: Boolean) {
+        timer?.cancel()
+        if (_mode.value !is IslandMode.Expanded) set(IslandMode.Expanded(startOnApps))
+    }
+
     fun collapse() {
         timer?.cancel()
         set(IslandMode.Collapsed)
@@ -104,7 +110,7 @@ class IslandController(private val scope: CoroutineScope) {
     }
 
     companion object {
-        const val COLLAPSE_ANIM_MS = 480L
+        const val COLLAPSE_ANIM_MS = 700L
     }
 }
 
