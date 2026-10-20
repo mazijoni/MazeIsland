@@ -3,6 +3,7 @@ package com.mazedev.island.island
 import android.content.Intent
 import android.graphics.Bitmap
 import android.media.AudioManager
+import android.os.SystemClock
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -21,6 +22,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,7 +36,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -69,6 +73,8 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -89,7 +95,9 @@ import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
 import com.mazedev.island.R
 import com.mazedev.island.media.MediaRepository
+import com.mazedev.island.media.LiveActivity
 import com.mazedev.island.media.MediaState
+import com.mazedev.island.media.formatDuration
 import com.mazedev.island.ui.MainActivity
 import com.mazedev.island.util.AppEntry
 import com.mazedev.island.util.Apps
@@ -100,7 +108,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-private enum class Face { IDLE, MINI, EXPANDED, NOTIF }
+private enum class Face { COLLAPSED, EXPANDED, NOTIF, FLASHLIGHT, ALERT, ACTIVITY }
 
 private val Dim = Color(0xFFA6A6AE)
 private val Soft = Color(0xE0FFFFFF)
@@ -119,11 +127,12 @@ private class AppTab(cfg: IslandConfig) {
     val height: Dp = run {
         val sliderH = sliders.size * SLIDER_H + (if (sliders.isNotEmpty() && rows > 0) 6f else 0f)
         val grid = if (rows > 0) rows * tileH + (rows - 1) * 10f else 0f
-        maxOf(150f, sliderH + grid + 14f).dp
+        maxOf(MEDIA_PAGE_H, sliderH + grid + 14f).dp
     }
 
     companion object {
         const val SLIDER_H = 48f
+        const val MEDIA_PAGE_H = 186f
     }
 }
 
@@ -135,32 +144,43 @@ fun IslandUi(controller: IslandController) {
     val cfg by Prefs.island.collectAsState()
     val media by MediaRepository.media.collectAsState()
     val sessions by MediaRepository.sessions.collectAsState()
+    val activities by MediaRepository.activities.collectAsState()
+    val torch by Controls.torch.collectAsState()
     val mode by controller.mode.collectAsState()
+    val nudge by controller.nudge.collectAsState()
     val density = LocalDensity.current
 
+    val layout = CollapsedLayout.of(media?.isPlaying == true, activities, torch)
     val face = when (mode) {
         is IslandMode.Notification -> Face.NOTIF
         is IslandMode.Expanded -> Face.EXPANDED
-        IslandMode.Collapsed -> if (media?.isPlaying == true) Face.MINI else Face.IDLE
+        IslandMode.Flashlight -> Face.FLASHLIGHT
+        is IslandMode.Alert -> Face.ALERT
+        is IslandMode.Activity -> Face.ACTIVITY
+        IslandMode.Collapsed -> Face.COLLAPSED
     }
-    val collapsed = face == Face.IDLE || face == Face.MINI
+    val collapsed = face == Face.COLLAPSED
     val cardWidth = IslandService.expandedWidthDp(LocalConfiguration.current.screenWidthDp, cfg.expandedMargin).dp
     val pageH = pageHeight(cfg)
-    var notifHeightPx by remember { mutableStateOf(0) }
+    var measuredPx by remember { mutableStateOf(0) }
 
     // Every state has an exact size. The black shape animates between them, always centered on
     // the camera (top center); the content inside just crossfades. Nothing is ever positioned
     // from a corner, so nothing can slide in from the side.
     val pillH = cfg.height.dp
+    val measured = if (measuredPx > 0) with(density) { measuredPx.toDp() } else pillH + 92.dp
     val targetW = when (face) {
-        Face.IDLE -> if (cfg.style == IslandStyle.HIDDEN) pillH else cfg.width.dp
-        Face.MINI -> cfg.width.dp + IslandService.MINI_EXTRA_DP.dp
-        Face.EXPANDED, Face.NOTIF -> cardWidth
+        Face.COLLAPSED -> collapsedWidthDp(cfg, layout.main).dp
+        Face.ALERT -> minOf(cardWidth, cfg.width.dp + 170.dp)
+        Face.FLASHLIGHT -> minOf(cardWidth, 300.dp)
+        Face.EXPANDED, Face.NOTIF, Face.ACTIVITY -> cardWidth
     }
     val targetH = when (face) {
-        Face.IDLE, Face.MINI -> pillH
+        Face.COLLAPSED -> pillH
+        Face.ALERT -> pillH + 8.dp
+        Face.FLASHLIGHT -> pillH + 158.dp
         Face.EXPANDED -> pillH + 2.dp + pageH + (if (sessions.isNotEmpty()) 12.dp else 0.dp) + 10.dp
-        Face.NOTIF -> if (notifHeightPx > 0) with(density) { notifHeightPx.toDp() } else pillH + 92.dp
+        Face.NOTIF, Face.ACTIVITY -> measured
     }
     // Opening gets a little bounce; closing settles without overshoot, so it never dips below the pill size.
     val sizeSpec = if (collapsed) spring<Dp>(dampingRatio = 1f, stiffness = 420f)
@@ -168,10 +188,24 @@ fun IslandUi(controller: IslandController) {
     val w by animateDpAsState(targetW, sizeSpec, label = "w")
     val h by animateDpAsState(targetH, sizeSpec, label = "h")
     val corner by animateDpAsState(
-        targetValue = if (collapsed) pillH / 2 else cfg.expandedCorner.dp,
+        targetValue = if (collapsed || face == Face.ALERT) targetH / 2 else cfg.expandedCorner.dp,
         animationSpec = sizeSpec,
         label = "corner",
     )
+    val nudgeX by animateDpAsState(
+        targetValue = (nudge * 10).dp,
+        animationSpec = spring(dampingRatio = 0.5f, stiffness = 900f),
+        label = "nudge",
+    )
+    // Detached bubble (second live activity), like iOS.
+    val bubbleShown = collapsed && layout.bubble != Compact.NONE
+    val bubbleScale by animateFloatAsState(
+        targetValue = if (bubbleShown) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f),
+        label = "bubble",
+    )
+    var lastBubble by remember { mutableStateOf(Compact.NONE) }
+    if (layout.bubble != Compact.NONE) lastBubble = layout.bubble
 
     val preview by IslandPreview.mode.collectAsState()
     val glow by animateFloatAsState(
@@ -187,8 +221,35 @@ fun IslandUi(controller: IslandController) {
             .then(if (collapsed) Modifier else Modifier.noRippleClick { controller.collapse() }),
         contentAlignment = Alignment.TopCenter,
     ) {
+        if (bubbleScale > 0.01f) {
+            Box(
+                Modifier
+                    .offset(x = w / 2 + BUBBLE_GAP_DP.dp + pillH / 2)
+                    .graphicsLayer {
+                        scaleX = bubbleScale
+                        scaleY = bubbleScale
+                        alpha = bubbleScale.coerceIn(0f, 1f)
+                    }
+                    .size(pillH)
+                    .clip(CircleShape)
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center,
+            ) {
+                when (lastBubble) {
+                    Compact.MEDIA -> Cover(media?.art, size = pillH - 8.dp, corner = pillH)
+                    Compact.TORCH -> Image(
+                        painter = painterResource(R.drawable.ic_flashlight),
+                        contentDescription = null,
+                        modifier = Modifier.size(pillH * 0.5f),
+                        colorFilter = ColorFilter.tint(TorchYellow),
+                    )
+                    else -> Unit
+                }
+            }
+        }
         Box(
             modifier = Modifier
+                .offset(x = nudgeX)
                 .size(w, h)
                 // White glow while adjusting the island in Settings, so you can see where it is.
                 .drawBehind {
@@ -208,12 +269,13 @@ fun IslandUi(controller: IslandController) {
                 .background(Color.Black)
                 .then(if (collapsed) Modifier else Modifier.noRippleClick { controller.poke() }),
         ) {
+            val faceKey: Any = if (face == Face.COLLAPSED) layout.main else face
             Crossfade(
-                targetState = face,
+                targetState = faceKey,
                 animationSpec = tween(180),
                 label = "face",
                 modifier = Modifier.fillMaxSize(),
-            ) { f ->
+            ) { k ->
                 // Each face is laid out at its own natural size, centered at the top, and clipped by
                 // the animated shape: it gets revealed from the camera outwards.
                 Box(
@@ -221,9 +283,11 @@ fun IslandUi(controller: IslandController) {
                         .fillMaxSize()
                         .wrapContentSize(Alignment.TopCenter, unbounded = true)
                 ) {
-                    when (f) {
-                        Face.IDLE -> Box(Modifier.size(targetW.coerceAtLeast(pillH), pillH))
-                        Face.MINI -> MiniMedia(cfg, media)
+                    when (k) {
+                        Compact.NONE -> Box(Modifier.size(targetW.coerceAtLeast(pillH), pillH))
+                        Compact.MEDIA -> MiniMedia(cfg, media)
+                        Compact.ACTIVITY -> activities.firstOrNull()?.let { CompactActivity(cfg, it) }
+                        Compact.TORCH -> CompactTorch(cfg)
                         Face.EXPANDED -> {
                             val startOnApps = (mode as? IslandMode.Expanded)?.startOnApps ?: false
                             key(startOnApps) { ExpandedCard(cfg, cardWidth, pageH, startOnApps, controller) }
@@ -233,16 +297,32 @@ fun IslandUi(controller: IslandController) {
                             if (n != null) {
                                 NotificationCard(
                                     cfg, n, cardWidth, controller,
-                                    Modifier.onSizeChanged { notifHeightPx = it.height },
+                                    Modifier.onSizeChanged { measuredPx = it.height },
                                 )
                             }
                         }
+                        Face.FLASHLIGHT -> FlashlightCard(cfg, minOf(cardWidth, 300.dp), controller)
+                        Face.ALERT -> (mode as? IslandMode.Alert)?.let {
+                            AlertPill(cfg, it.alert, minOf(cardWidth, cfg.width.dp + 170.dp))
+                        }
+                        Face.ACTIVITY -> {
+                            val key = (mode as? IslandMode.Activity)?.key
+                            activities.firstOrNull { it.key == key }?.let {
+                                ActivityCard(
+                                    cfg, it, cardWidth, controller,
+                                    Modifier.onSizeChanged { sz -> measuredPx = sz.height },
+                                )
+                            }
+                        }
+                        else -> Unit
                     }
                 }
             }
         }
     }
 }
+
+private val TorchYellow = Color(0xFFFFD60A)
 
 // --------------------------------------------------------------- collapsed
 
@@ -262,6 +342,325 @@ private fun MiniMedia(cfg: IslandConfig, media: MediaState?) {
             playing = media?.isPlaying == true,
             modifier = Modifier.padding(end = 6.dp),
         )
+    }
+}
+
+/** Timer / call / navigation in the collapsed pill: icon on the left, live time on the right. */
+@Composable
+private fun CompactActivity(cfg: IslandConfig, a: LiveActivity) {
+    val h = cfg.height.dp
+    val now = rememberWallClock()
+    val accent = Color(a.accent)
+    Row(
+        modifier = Modifier
+            .size(cfg.width.dp + IslandService.MINI_EXTRA_DP.dp, h)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        ActivityIcon(a, h - 12.dp)
+        Text(
+            text = a.timerText(now) ?: a.text.ifBlank { a.title },
+            color = if (a.kind == LiveActivity.Kind.CALL) CallGreen else accent,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 8.dp).widthIn(max = 90.dp),
+        )
+    }
+}
+
+@Composable
+private fun CompactTorch(cfg: IslandConfig) {
+    val h = cfg.height.dp
+    val level by Controls.torchLevel.collectAsState()
+    val context = LocalContext.current
+    val max = remember { Controls.torchMaxLevel(context) }
+    Row(
+        modifier = Modifier
+            .size(cfg.width.dp + 56.dp, h)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Image(
+            painter = painterResource(R.drawable.ic_flashlight),
+            contentDescription = null,
+            modifier = Modifier.size(h * 0.5f),
+            colorFilter = ColorFilter.tint(TorchYellow),
+        )
+        if (max > 1) {
+            Text("${(level * 100 / max)}%", color = TorchYellow, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun ActivityIcon(a: LiveActivity, size: Dp) {
+    val res = when (a.kind) {
+        LiveActivity.Kind.CALL -> R.drawable.ic_call
+        LiveActivity.Kind.TIMER -> R.drawable.ic_timer
+        else -> null
+    }
+    if (res != null && a.kind != LiveActivity.Kind.CALL) {
+        Image(
+            painter = painterResource(res),
+            contentDescription = null,
+            modifier = Modifier.size(size * 0.8f),
+            colorFilter = ColorFilter.tint(Color(a.accent)),
+        )
+    } else if (a.icon != null) {
+        Image(
+            bitmap = remember(a.icon) { a.icon.asImageBitmap() },
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(size).clip(CircleShape),
+        )
+    } else if (res != null) {
+        Image(
+            painter = painterResource(res),
+            contentDescription = null,
+            modifier = Modifier.size(size * 0.8f),
+            colorFilter = ColorFilter.tint(CallGreen),
+        )
+    }
+}
+
+private val CallGreen = Color(0xFF34C759)
+private val CallRed = Color(0xFFFF453A)
+
+/** Wall-clock time that updates every half second (for timers). */
+@Composable
+private fun rememberWallClock(): Long {
+    val t by produceState(System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(500)
+        }
+    }
+    return t
+}
+
+// --------------------------------------------------------- flashlight card
+
+/** iOS 18 style: a tall bar you swipe up/down for brightness, and a button to switch it on/off. */
+@Composable
+private fun FlashlightCard(cfg: IslandConfig, width: Dp, controller: IslandController) {
+    val context = LocalContext.current
+    val on by Controls.torch.collectAsState()
+    val level by Controls.torchLevel.collectAsState()
+    val max = remember { Controls.torchMaxLevel(context) }
+    val fraction = if (!on) 0f else level.toFloat() / max.coerceAtLeast(1)
+    var barHeightPx by remember { mutableStateOf(1) }
+    val barShape = RoundedCornerShape(22.dp)
+
+    Row(
+        modifier = Modifier
+            .width(width)
+            .padding(top = cfg.height.dp + 10.dp, start = 22.dp, end = 22.dp, bottom = 18.dp)
+            .height(130.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                Modifier
+                    .size(64.dp)
+                    .glass(CircleShape, strong = on)
+                    .then(if (on) Modifier.background(TorchYellow.copy(alpha = 0.18f)) else Modifier)
+                    .clickable {
+                        Controls.toggleTorch(context)
+                        controller.poke()
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.ic_flashlight),
+                    contentDescription = "Flashlight",
+                    modifier = Modifier.size(28.dp),
+                    colorFilter = ColorFilter.tint(if (on) TorchYellow else Soft),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(if (on) "On" else "Off", color = Dim, fontSize = 12.sp)
+            if (max <= 1) Text("No dimming on this phone", color = Dim, fontSize = 10.sp)
+        }
+        // Brightness bar
+        Box(
+            modifier = Modifier
+                .width(64.dp)
+                .fillMaxHeight()
+                .onSizeChanged { barHeightPx = it.height.coerceAtLeast(1) }
+                .glass(barShape)
+                .pointerInput(Unit) {
+                    detectTapGestures {
+                        Controls.setTorchFraction(context, 1f - it.y / barHeightPx)
+                        controller.poke()
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures { change, _ ->
+                        change.consume()
+                        Controls.setTorchFraction(context, (1f - change.position.y / barHeightPx).coerceIn(0f, 1f))
+                        controller.poke()
+                    }
+                },
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(fraction.coerceIn(0f, 1f))
+                    .clip(barShape)
+                    .background(Color.White.copy(alpha = 0.85f))
+            )
+        }
+    }
+}
+
+// --------------------------------------------------------------- alerts
+
+@Composable
+private fun AlertPill(cfg: IslandConfig, alert: SystemAlert, width: Dp) {
+    val color = Color(alert.color)
+    Row(
+        modifier = Modifier
+            .size(width, cfg.height.dp + 8.dp)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Image(
+            painter = painterResource(alert.icon),
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            colorFilter = ColorFilter.tint(color),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            alert.title,
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        // Leave the middle free for the camera.
+        if (alert.trailing.isNotBlank()) {
+            Text(alert.trailing, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+        alert.level?.let { lvl ->
+            Spacer(Modifier.width(6.dp))
+            Box(
+                Modifier
+                    .size(16.dp)
+                    .drawBehind {
+                        val stroke = 2.5.dp.toPx()
+                        drawCircle(color.copy(alpha = 0.25f), style = androidx.compose.ui.graphics.drawscope.Stroke(stroke))
+                        drawArc(
+                            color = color,
+                            startAngle = -90f,
+                            sweepAngle = 360f * lvl,
+                            useCenter = false,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(stroke, cap = StrokeCap.Round),
+                        )
+                    }
+            )
+        }
+    }
+}
+
+// ------------------------------------------------------- activity card
+
+@Composable
+private fun ActivityCard(
+    cfg: IslandConfig,
+    a: LiveActivity,
+    width: Dp,
+    controller: IslandController,
+    modifier: Modifier = Modifier,
+) {
+    val now = rememberWallClock()
+    val timer = a.timerText(now)
+    Column(
+        modifier = modifier
+            .width(width)
+            .padding(start = 18.dp, end = 18.dp, bottom = 16.dp, top = cfg.height.dp + 8.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().noRippleClick {
+                a.contentIntent?.sendCompat()
+                controller.collapse()
+            },
+        ) {
+            ActivityIcon(a, 44.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (a.ringing) "Incoming call" else a.appName,
+                    color = Dim,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                )
+                Text(
+                    a.title,
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (a.text.isNotBlank() && a.text != timer) {
+                    Text(a.text, color = Dim, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (timer != null) {
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    timer,
+                    color = if (a.kind == LiveActivity.Kind.CALL) CallGreen else Color(a.accent),
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Light,
+                )
+            }
+        }
+        if (a.actions.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                a.actions.forEach { (label, intent) ->
+                    val tint = when (label) {
+                        "Answer" -> CallGreen
+                        "Decline", "End" -> CallRed
+                        else -> null
+                    }
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .clip(RoundedCornerShape(21.dp))
+                            .background(tint?.copy(alpha = 0.85f) ?: Color.White.copy(alpha = 0.1f))
+                            .clickable {
+                                runCatching { intent.send() }
+                                controller.poke()
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (tint != null) {
+                            Image(
+                                painter = painterResource(if (label == "Answer") R.drawable.ic_call else R.drawable.ic_call_end),
+                                contentDescription = label,
+                                modifier = Modifier.size(20.dp),
+                                colorFilter = ColorFilter.tint(Color.White),
+                            )
+                        } else {
+                            Text(label, color = Soft, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -383,6 +782,7 @@ private fun MediaPage(s: MediaState, controller: IslandController) {
             Spacer(Modifier.width(10.dp))
             Bars(Color(s.accent), s.isPlaying)
         }
+        if (s.durationMs > 0) ScrubBar(s, controller)
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -755,6 +1155,86 @@ private fun ReplyBox(onSend: (String) -> Unit) {
         GlassButton(R.drawable.ic_send, 40.dp, strong = text.isNotBlank()) {
             val t = text.trim()
             if (t.isNotEmpty()) onSend(t)
+        }
+    }
+}
+
+// ------------------------------------------------------------ scrubbing
+
+/** Elapsed / remaining time with a bar you drag to seek (iOS style: the bar thickens while dragging). */
+@Composable
+private fun ScrubBar(s: MediaState, controller: IslandController) {
+    val context = LocalContext.current
+    val nowElapsed by produceState(SystemClock.elapsedRealtime(), s.isPlaying) {
+        while (true) {
+            value = SystemClock.elapsedRealtime()
+            delay(if (s.isPlaying) 250 else 1_000)
+        }
+    }
+    var dragFraction by remember { mutableStateOf<Float?>(null) }
+    // After seeking, hold the new position until the player reports it (avoids a jump back).
+    var pendingSeek by remember { mutableStateOf<Long?>(null) }
+    val livePos = s.livePosition(nowElapsed)
+    LaunchedEffect(s.positionMs, s.positionUpdatedAt) { pendingSeek = null }
+
+    val pos = dragFraction?.let { (it * s.durationMs).toLong() } ?: pendingSeek ?: livePos
+    val fraction = (pos.toFloat() / s.durationMs).coerceIn(0f, 1f)
+    var widthPx by remember { mutableStateOf(1) }
+    val thickness by animateDpAsState(if (dragFraction != null) 9.dp else 5.dp, label = "thick")
+
+    Column(Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(22.dp)
+                .onSizeChanged { widthPx = it.width.coerceAtLeast(1) }
+                .pointerInput(s.packageName, s.durationMs) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragFraction = (it.x / widthPx).coerceIn(0f, 1f) },
+                        onDragEnd = {
+                            dragFraction?.let {
+                                val target = (it * s.durationMs).toLong()
+                                pendingSeek = target
+                                MediaRepository.seekTo(context, s.packageName, target)
+                            }
+                            dragFraction = null
+                        },
+                        onDragCancel = { dragFraction = null },
+                    ) { change, _ ->
+                        change.consume()
+                        dragFraction = (change.position.x / widthPx).coerceIn(0f, 1f)
+                        controller.poke()
+                    }
+                }
+                .pointerInput(s.packageName, s.durationMs) {
+                    detectTapGestures {
+                        val target = ((it.x / widthPx).coerceIn(0f, 1f) * s.durationMs).toLong()
+                        pendingSeek = target
+                        MediaRepository.seekTo(context, s.packageName, target)
+                        controller.poke()
+                    }
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(thickness)
+                    .clip(RoundedCornerShape(thickness / 2))
+                    .background(Color.White.copy(alpha = 0.18f))
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(fraction)
+                        .background(Color.White.copy(alpha = if (dragFraction != null) 0.95f else 0.75f))
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth()) {
+            Text(formatDuration(pos), color = Dim, fontSize = 11.sp)
+            Spacer(Modifier.weight(1f))
+            Text("-" + formatDuration((s.durationMs - pos).coerceAtLeast(0)), color = Dim, fontSize = 11.sp)
         }
     }
 }

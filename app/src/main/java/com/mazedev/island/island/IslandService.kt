@@ -4,7 +4,10 @@ import android.accessibilityservice.AccessibilityService
 import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.os.Build
+import android.view.GestureDetector
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -19,7 +22,11 @@ import com.mazedev.island.PreviewMode
 import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
 import com.mazedev.island.media.MediaRepository
+import com.mazedev.island.util.Controls
 import com.mazedev.island.util.HeadsUp
+import com.mazedev.island.util.Shortcut
+import com.mazedev.island.util.ShortcutRunner
+import com.mazedev.island.util.sendCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -31,6 +38,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -81,14 +89,15 @@ class IslandService : AccessibilityService() {
         windowManager.addView(displayView, displayParams(Prefs.island.value, interactive = false, focusable = false))
         display = displayView
 
-        val tapView = View(this).apply {
-            setOnClickListener {
-                val anyRecent = MediaRepository.sessions.value.any { it.isRecent() }
-                controller.expand(startOnApps = !anyRecent)
-            }
-        }
-        windowManager.addView(tapView, touchParams(Prefs.island.value, collapsed = true, wide = false))
+        Controls.prepare(this)
+        val tapView = View(this)
+        val detector = GestureDetector(this, IslandGestures(tapView))
+        @Suppress("ClickableViewAccessibility")
+        tapView.setOnTouchListener { _, ev -> detector.onTouchEvent(ev); true }
+        windowManager.addView(tapView, touchParams(Prefs.island.value, true, currentLayout()))
         touchTarget = tapView
+
+        alerts = SystemAlerts(this) { controller.showAlert(it) }.also { it.start() }
 
         val collapsedFlow = controller.mode.map { it == IslandMode.Collapsed }.distinctUntilChanged()
         val previewOpen = IslandPreview.mode.map { it == PreviewMode.EXPANDED || it == PreviewMode.APPS }
@@ -103,13 +112,29 @@ class IslandService : AccessibilityService() {
         }
         // Touch target: follows the collapsed pill's size; disabled while expanded.
         scope.launch {
-            combine(
-                Prefs.island,
-                collapsedFlow,
-                MediaRepository.media.map { it?.isPlaying == true }.distinctUntilChanged(),
-            ) { cfg, collapsed, playing -> Triple(cfg, collapsed, playing) }
+            combine(Prefs.island, collapsedFlow, layoutFlow()) { cfg, collapsed, layout ->
+                Triple(cfg, collapsed, layout)
+            }
                 .distinctUntilChanged()
-                .collect { (cfg, collapsed, playing) -> applyTouch(cfg, collapsed, playing) }
+                .collect { (cfg, collapsed, layout) -> applyTouch(cfg, collapsed, layout) }
+        }
+
+        // Incoming calls open up on their own (and close when the call is answered or missed).
+        scope.launch {
+            var shownRinging: String? = null
+            MediaRepository.activities.collect { list ->
+                val ringing = list.firstOrNull { it.ringing }
+                if (ringing != null && ringing.key != shownRinging) {
+                    shownRinging = ringing.key
+                    controller.showActivity(ringing.key, holdMs = 0)
+                } else if (ringing == null && shownRinging != null) {
+                    val m = controller.mode.value
+                    if (m is IslandMode.Activity && m.key == shownRinging) controller.collapse()
+                    shownRinging = null
+                }
+                val m = controller.mode.value
+                if (m is IslandMode.Activity && list.none { it.key == m.key }) controller.collapse()
+            }
         }
         scope.launch {
             Prefs.island.collect { cfg -> applyPopupSetting(cfg) }
@@ -132,6 +157,107 @@ class IslandService : AccessibilityService() {
         }
     }
 
+    private var alerts: SystemAlerts? = null
+
+    private fun currentLayout() = CollapsedLayout.of(
+        MediaRepository.media.value?.isPlaying == true,
+        MediaRepository.activities.value,
+        Controls.torch.value,
+    )
+
+    private fun layoutFlow() = combine(
+        MediaRepository.media.map { it?.isPlaying == true }.distinctUntilChanged(),
+        MediaRepository.activities,
+        Controls.torch,
+    ) { playing, acts, torch -> CollapsedLayout.of(playing, acts, torch) }.distinctUntilChanged()
+
+    /** Tap, double tap, long press and swipe on the collapsed island. */
+    private inner class IslandGestures(private val view: View) : GestureDetector.SimpleOnGestureListener() {
+        private val doubleTapEnabled get() = Shortcut.from(Prefs.island.value.doubleTap) != Shortcut.NONE
+
+        override fun onDown(e: MotionEvent) = true
+
+        override fun onSingleTapUp(e: MotionEvent): Boolean {
+            if (!doubleTapEnabled) tap(e.x)
+            return true
+        }
+
+        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+            if (doubleTapEnabled) tap(e.x)
+            return true
+        }
+
+        override fun onDoubleTap(e: MotionEvent): Boolean {
+            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            runShortcut(Shortcut.from(Prefs.island.value.doubleTap))
+            return true
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            val layout = currentLayout()
+            when (layout.main) {
+                Compact.ACTIVITY -> MediaRepository.activities.value.firstOrNull()?.contentIntent?.sendCompat()
+                Compact.MEDIA -> MediaRepository.media.value?.let { MediaRepository.openPlayer(this@IslandService, it.packageName) }
+                Compact.TORCH -> controller.showFlashlight()
+                Compact.NONE -> controller.expand(startOnApps = true)
+            }
+        }
+
+        override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+            if (abs(vx) < abs(vy) * 1.2f || abs(vx) < 400f) return false
+            val media = MediaRepository.media.value ?: return false
+            if (vx < 0) {
+                MediaRepository.next(this@IslandService, media.packageName)
+                controller.nudge(-1)
+            } else {
+                MediaRepository.previous(this@IslandService, media.packageName)
+                controller.nudge(1)
+            }
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            return true
+        }
+
+        private fun tap(x: Float) {
+            val layout = currentLayout()
+            val cfg = Prefs.island.value
+            val density = resources.displayMetrics.density
+            val mainHalf = collapsedWidthDp(cfg, layout.main) * density / 2f
+            val onBubble = layout.bubble != Compact.NONE && x > view.width / 2f + mainHalf
+            when (if (onBubble) layout.bubble else layout.main) {
+                Compact.ACTIVITY -> MediaRepository.activities.value.firstOrNull()?.let { controller.showActivity(it.key) }
+                Compact.MEDIA -> controller.expand(startOnApps = false)
+                Compact.TORCH -> controller.showFlashlight()
+                Compact.NONE -> {
+                    val anyRecent = MediaRepository.sessions.value.any { it.isRecent() }
+                    controller.expand(startOnApps = !anyRecent)
+                }
+            }
+        }
+    }
+
+    private fun runShortcut(s: Shortcut) {
+        when (s) {
+            Shortcut.NONE -> Unit
+            Shortcut.FLASHLIGHT -> {
+                if (Controls.torchOn) {
+                    Controls.setTorch(this, false)
+                    controller.collapse()
+                } else {
+                    Controls.setTorch(this, true)
+                    controller.showFlashlight()
+                }
+            }
+            Shortcut.APP_MENU -> controller.expand(startOnApps = true)
+            Shortcut.SCREENSHOT -> scope.launch {
+                controller.collapse()
+                delay(IslandController.COLLAPSE_ANIM_MS)
+                ShortcutRunner.run(this@IslandService, s)
+            }
+            else -> ShortcutRunner.run(this, s)
+        }
+    }
+
     private data class DisplayState(val cfg: IslandConfig, val interactive: Boolean, val focusable: Boolean)
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -140,7 +266,7 @@ class IslandService : AccessibilityService() {
         val cfg = Prefs.island.value
         val collapsed = controller.mode.value == IslandMode.Collapsed
         applyDisplay(DisplayState(cfg, !collapsed, controller.focusable.value))
-        applyTouch(cfg, collapsed, MediaRepository.media.value?.isPlaying == true)
+        applyTouch(cfg, collapsed, currentLayout())
     }
 
     private fun visible(cfg: IslandConfig): Boolean =
@@ -152,10 +278,10 @@ class IslandService : AccessibilityService() {
         runCatching { wm?.updateViewLayout(view, displayParams(state.cfg, state.interactive, state.focusable)) }
     }
 
-    private fun applyTouch(cfg: IslandConfig, collapsed: Boolean, playing: Boolean) {
+    private fun applyTouch(cfg: IslandConfig, collapsed: Boolean, layout: CollapsedLayout) {
         val view = touchTarget ?: return
         view.visibility = if (visible(cfg)) View.VISIBLE else View.GONE
-        runCatching { wm?.updateViewLayout(view, touchParams(cfg, collapsed, playing)) }
+        runCatching { wm?.updateViewLayout(view, touchParams(cfg, collapsed, layout)) }
     }
 
     /** Turns the system's own pop-up banners off while the island is on (if allowed). */
@@ -206,14 +332,12 @@ class IslandService : AccessibilityService() {
         }
     }
 
-    private fun touchParams(cfg: IslandConfig, collapsed: Boolean, wide: Boolean): WindowManager.LayoutParams {
+    private fun touchParams(cfg: IslandConfig, collapsed: Boolean, layout: CollapsedLayout): WindowManager.LayoutParams {
         val density = resources.displayMetrics.density
-        // Exactly the pill's size, so the rest of the status bar stays touchable (shade pull-down).
-        val pillWidthDp = when {
-            wide -> cfg.width + MINI_EXTRA_DP
-            cfg.style == IslandStyle.HIDDEN -> cfg.height
-            else -> cfg.width
-        }
+        // Exactly the pill's size (+ the bubble on both sides, to stay centered), so the rest of
+        // the status bar stays touchable (shade pull-down).
+        val bubbleExtra = if (layout.bubble != Compact.NONE) 2 * (BUBBLE_GAP_DP + cfg.height) else 0f
+        val pillWidthDp = collapsedWidthDp(cfg, layout.main) + bubbleExtra
         var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
         if (!collapsed) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         return baseParams(
@@ -248,6 +372,7 @@ class IslandService : AccessibilityService() {
 
     override fun onDestroy() {
         if (popupsHiddenByUs) HeadsUp.setSystemPopups(this, enabled = true)
+        alerts?.stop()
         display?.let { runCatching { wm?.removeView(it) } }
         touchTarget?.let { runCatching { wm?.removeView(it) } }
         display = null

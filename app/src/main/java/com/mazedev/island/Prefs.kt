@@ -45,6 +45,17 @@ data class IslandConfig(
     /** Quick controls in the app tab, in display order (ControlKind names). */
     val controls: List<String> = listOf("BRIGHTNESS", "FLASHLIGHT", "DND"),
     val showSettingsTile: Boolean = true,
+    /** What double-tapping the collapsed island does (Shortcut name). */
+    val doubleTap: String = "FLASHLIGHT",
+    /** Timers, calls, navigation… from ongoing notifications. */
+    val liveActivities: Boolean = true,
+    /** iOS-style system alerts. */
+    val alertCharging: Boolean = true,
+    val alertLowBattery: Boolean = true,
+    val alertRinger: Boolean = true,
+    val alertDnd: Boolean = true,
+    val alertUnlock: Boolean = false,
+    val alertBluetooth: Boolean = true,
     val menuApps: List<String> = listOf("com.spotify.music"),
 )
 
@@ -77,6 +88,14 @@ object Prefs {
             doorbellTakeover = sp.getBoolean("doorbellTakeover", d.doorbellTakeover),
             controls = sp.getString("controls", null)?.split(",")?.filter { it.isNotBlank() } ?: d.controls,
             showSettingsTile = sp.getBoolean("showSettingsTile", d.showSettingsTile),
+            doubleTap = sp.getString("doubleTap", d.doubleTap) ?: d.doubleTap,
+            liveActivities = sp.getBoolean("liveActivities", d.liveActivities),
+            alertCharging = sp.getBoolean("alertCharging", d.alertCharging),
+            alertLowBattery = sp.getBoolean("alertLowBattery", d.alertLowBattery),
+            alertRinger = sp.getBoolean("alertRinger", d.alertRinger),
+            alertDnd = sp.getBoolean("alertDnd", d.alertDnd),
+            alertUnlock = sp.getBoolean("alertUnlock", d.alertUnlock),
+            alertBluetooth = sp.getBoolean("alertBluetooth", d.alertBluetooth),
             menuApps = sp.getString("menuApps", null)
                 ?.split(",")
                 ?.filter { it.isNotBlank() }
@@ -108,6 +127,14 @@ object Prefs {
             .putBoolean("doorbellTakeover", c.doorbellTakeover)
             .putString("controls", c.controls.joinToString(","))
             .putBoolean("showSettingsTile", c.showSettingsTile)
+            .putString("doubleTap", c.doubleTap)
+            .putBoolean("liveActivities", c.liveActivities)
+            .putBoolean("alertCharging", c.alertCharging)
+            .putBoolean("alertLowBattery", c.alertLowBattery)
+            .putBoolean("alertRinger", c.alertRinger)
+            .putBoolean("alertDnd", c.alertDnd)
+            .putBoolean("alertUnlock", c.alertUnlock)
+            .putBoolean("alertBluetooth", c.alertBluetooth)
             .putString("menuApps", c.menuApps.joinToString(","))
             .apply()
     }

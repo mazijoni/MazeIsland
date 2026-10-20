@@ -1,6 +1,11 @@
 package com.mazedev.island.ui
 
+import android.Manifest
 import android.appwidget.AppWidgetManager
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
@@ -75,6 +80,7 @@ import com.mazedev.island.Prefs
 import com.mazedev.island.util.ControlKind
 import com.mazedev.island.util.Controls
 import com.mazedev.island.util.HeadsUp
+import com.mazedev.island.util.Shortcut
 import com.mazedev.island.media.MediaRepository
 import com.mazedev.island.util.AppEntry
 import com.mazedev.island.util.Apps
@@ -109,6 +115,8 @@ fun SettingsScreen() {
             item { NowPlayingCard() }
             item { WidgetCard() }
             item { IslandCard() }
+            item { GesturesCard() }
+            item { LiveCard() }
             item { ControlsCard() }
             item { DoorbellCard() }
         }
@@ -700,5 +708,112 @@ private fun ControlsCard() {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------- gestures
+
+@Composable
+private fun GesturesCard() {
+    val cfg by Prefs.island.collectAsState()
+    var picking by remember { mutableStateOf(false) }
+    val current = Shortcut.from(cfg.doubleTap)
+    Section("Gestures") {
+        GestureLine("Tap", "Open the island (music, timer, or app menu)")
+        GestureLine("Long press", "Open the app that's showing (like tapping on iPhone)")
+        GestureLine("Swipe left / right", "Next / previous song while music plays")
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Double tap", fontWeight = FontWeight.Medium)
+                Text(current.label, color = Muted, fontSize = 13.sp)
+            }
+            OutlinedButton(onClick = { picking = true }) { Text("Change") }
+        }
+    }
+    if (picking) {
+        AlertDialog(
+            onDismissRequest = { picking = false },
+            title = { Text("Double tap does…") },
+            text = {
+                LazyColumn(Modifier.heightIn(max = 440.dp)) {
+                    items(Shortcut.entries.filter { it.available }) { sc ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    Prefs.updateIsland { it.copy(doubleTap = sc.name) }
+                                    picking = false
+                                }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Image(
+                                painter = painterResource(sc.icon),
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                                colorFilter = ColorFilter.tint(if (sc == current) MaterialTheme.colorScheme.primary else Muted),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(sc.label, modifier = Modifier.weight(1f))
+                            if (sc == current) Text("✓", color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { picking = false }) { Text("Close") } },
+        )
+    }
+}
+
+@Composable
+private fun GestureLine(gesture: String, what: String) {
+    Row(Modifier.padding(vertical = 3.dp)) {
+        Text(gesture, fontWeight = FontWeight.Medium, fontSize = 14.sp, modifier = Modifier.width(130.dp))
+        Text(what, color = Muted, fontSize = 13.sp)
+    }
+}
+
+// ------------------------------------------------- live activities + alerts
+
+@Composable
+private fun LiveCard() {
+    val context = LocalContext.current
+    val cfg by Prefs.island.collectAsState()
+    val btLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        Prefs.updateIsland { it.copy(alertBluetooth = granted) }
+    }
+    Section("Live activities & alerts") {
+        ToggleRow("Live activities (timers, calls, navigation)", cfg.liveActivities) { v ->
+            Prefs.updateIsland { it.copy(liveActivities = v) }
+        }
+        Text(
+            "Running timers and stopwatches, calls and navigation stay in the island. With music " +
+                "playing too, the music moves into a small bubble next to it, like on iPhone.",
+            color = Muted,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text("Quick alerts", fontWeight = FontWeight.Medium)
+        ToggleRow("Charging", cfg.alertCharging) { v -> Prefs.updateIsland { it.copy(alertCharging = v) } }
+        ToggleRow("Low battery (20%, 10%, 5%)", cfg.alertLowBattery) { v -> Prefs.updateIsland { it.copy(alertLowBattery = v) } }
+        ToggleRow("Sound / vibrate / silent", cfg.alertRinger) { v -> Prefs.updateIsland { it.copy(alertRinger = v) } }
+        ToggleRow("Do Not Disturb", cfg.alertDnd) { v -> Prefs.updateIsland { it.copy(alertDnd = v) } }
+        ToggleRow("Unlocked", cfg.alertUnlock) { v -> Prefs.updateIsland { it.copy(alertUnlock = v) } }
+        ToggleRow("Bluetooth device connected", cfg.alertBluetooth) { v ->
+            if (v && Build.VERSION.SDK_INT >= 31 &&
+                context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+            ) {
+                btLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+            } else {
+                Prefs.updateIsland { it.copy(alertBluetooth = v) }
+            }
+        }
+        Text(
+            "Turning alerts or the Bluetooth permission on takes effect after toggling the island's " +
+                "accessibility service off and on (or a restart).",
+            color = Muted,
+            fontSize = 11.sp,
+        )
     }
 }

@@ -37,7 +37,21 @@ data class MediaState(
     val canPlayFromUri: Boolean,
     /** When it was last playing (now, if it's playing). 0 = never seen playing. */
     val lastActiveAt: Long,
+    /** Track length in ms (0 if unknown). */
+    val durationMs: Long = 0L,
+    /** Position at [positionUpdatedAt] (SystemClock.elapsedRealtime). */
+    val positionMs: Long = 0L,
+    val positionUpdatedAt: Long = 0L,
+    val speed: Float = 1f,
 ) {
+    /** Current playback position, extrapolated from the last update. */
+    fun livePosition(nowElapsed: Long): Long {
+        val p = if (isPlaying && positionUpdatedAt > 0) {
+            positionMs + ((nowElapsed - positionUpdatedAt) * speed).toLong()
+        } else positionMs
+        return if (durationMs > 0) p.coerceIn(0L, durationMs) else p.coerceAtLeast(0L)
+    }
+
     /** Playing, or paused less than a minute ago. */
     fun isRecent(now: Long = System.currentTimeMillis()): Boolean =
         isPlaying || (lastActiveAt > 0 && now - lastActiveAt < RECENT_MS)
@@ -45,6 +59,45 @@ data class MediaState(
     companion object {
         const val RECENT_MS = 60_000L
     }
+}
+
+/**
+ * An ongoing thing shown like an iOS "Live Activity": a running timer or stopwatch, a phone call,
+ * navigation, screen recording… taken from apps' ongoing notifications.
+ */
+data class LiveActivity(
+    val key: String,
+    val packageName: String,
+    val appName: String,
+    val kind: Kind,
+    val title: String,
+    val text: String,
+    val icon: Bitmap?,
+    /** Base time for the chronometer (wall clock ms), or 0 if it has none. */
+    val chronoBase: Long,
+    val countDown: Boolean,
+    val accent: Int,
+    val contentIntent: PendingIntent?,
+    val actions: List<Pair<String, PendingIntent>>,
+    /** Incoming (ringing) call: shown expanded with answer / decline. */
+    val ringing: Boolean = false,
+) {
+    enum class Kind { CALL, TIMER, NAVIGATION, OTHER }
+
+    /** "12:34", counting up or down, or null if this activity has no timer. */
+    fun timerText(nowWall: Long): String? {
+        if (chronoBase <= 0L) return null
+        val ms = if (countDown) (chronoBase - nowWall).coerceAtLeast(0) else (nowWall - chronoBase).coerceAtLeast(0)
+        return formatDuration(ms)
+    }
+}
+
+fun formatDuration(ms: Long): String {
+    val total = ms / 1000
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
 data class NotifEvent(
@@ -80,6 +133,19 @@ object MediaRepository {
     private val _spotify = MutableStateFlow<MediaState?>(null)
     /** Spotify's session only. Used by the widget. */
     val spotify: StateFlow<MediaState?> = _spotify.asStateFlow()
+
+    private val _activities = MutableStateFlow<List<LiveActivity>>(emptyList())
+    /** Live activities, most important first (calls, then timers, then the rest). */
+    val activities: StateFlow<List<LiveActivity>> = _activities.asStateFlow()
+
+    internal fun putActivity(a: LiveActivity) {
+        val list = _activities.value.filterNot { it.key == a.key } + a
+        _activities.value = list.sortedBy { it.kind.ordinal }
+    }
+
+    internal fun removeActivity(key: String) {
+        if (_activities.value.any { it.key == key }) _activities.value = _activities.value.filterNot { it.key == key }
+    }
 
     private val _notifications = MutableSharedFlow<NotifEvent>(extraBufferCapacity = 8)
     val notifications: SharedFlow<NotifEvent> = _notifications.asSharedFlow()
@@ -132,6 +198,10 @@ object MediaRepository {
 
     fun previous(context: Context, pkg: String? = null) {
         controllerFor(context, pkg)?.transportControls?.skipToPrevious()
+    }
+
+    fun seekTo(context: Context, pkg: String, positionMs: Long) {
+        controllerFor(context, pkg)?.transportControls?.seekTo(positionMs.coerceAtLeast(0L))
     }
 
     /** Best effort: ask Spotify to start a playlist directly. False if it can't. */

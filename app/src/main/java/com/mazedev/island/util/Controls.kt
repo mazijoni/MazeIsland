@@ -15,6 +15,9 @@ import android.os.Looper
 import android.provider.Settings
 import androidx.annotation.DrawableRes
 import com.mazedev.island.R
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
@@ -90,27 +93,46 @@ object Controls {
 
     // ------------------------------------------------------------- flashlight
 
-    @Volatile var torchOn = false
-        private set
+    private val _torch = MutableStateFlow(false)
+    /** Whether the flashlight is on (kept in sync with the system, also when toggled elsewhere). */
+    val torch: StateFlow<Boolean> = _torch.asStateFlow()
+    val torchOn: Boolean get() = _torch.value
+
+    private val _torchLevel = MutableStateFlow(1)
+    val torchLevel: StateFlow<Int> = _torchLevel.asStateFlow()
+
     private var torchCameraId: String? = null
     private var torchRegistered = false
+    private var torchMax = 1
 
     private fun torchId(context: Context): String? {
         torchCameraId?.let { return it }
         val cm = context.getSystemService(CameraManager::class.java)
-        if (!torchRegistered) {
-            torchRegistered = true
-            cm.registerTorchCallback(object : CameraManager.TorchCallback() {
-                override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
-                    if (cameraId == torchCameraId) torchOn = enabled
-                }
-            }, Handler(Looper.getMainLooper()))
-        }
         torchCameraId = runCatching {
             cm.cameraIdList.firstOrNull {
                 cm.getCameraCharacteristics(it).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             }
         }.getOrNull()
+        torchCameraId?.let { id ->
+            if (Build.VERSION.SDK_INT >= 33) {
+                torchMax = runCatching {
+                    cm.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_STRENGTH_MAXIMUM_LEVEL)
+                }.getOrNull() ?: 1
+                _torchLevel.value = torchMax
+            }
+        }
+        if (!torchRegistered) {
+            torchRegistered = true
+            cm.registerTorchCallback(object : CameraManager.TorchCallback() {
+                override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
+                    if (cameraId == torchCameraId) _torch.value = enabled
+                }
+
+                override fun onTorchStrengthLevelChanged(cameraId: String, newStrengthLevel: Int) {
+                    if (cameraId == torchCameraId) _torchLevel.value = newStrengthLevel
+                }
+            }, Handler(Looper.getMainLooper()))
+        }
         return torchCameraId
     }
 
@@ -118,11 +140,47 @@ object Controls {
         torchId(context)
     }
 
-    fun toggleTorch(context: Context) {
-        val id = torchId(context) ?: return
-        runCatching { context.getSystemService(CameraManager::class.java).setTorchMode(id, !torchOn) }
-            .onSuccess { torchOn = !torchOn }
+    /** How many brightness steps the flashlight has (1 = on/off only). */
+    fun torchMaxLevel(context: Context): Int {
+        torchId(context)
+        return torchMax
     }
+
+    fun setTorch(context: Context, on: Boolean) {
+        val id = torchId(context) ?: return
+        val cm = context.getSystemService(CameraManager::class.java)
+        runCatching {
+            if (on && Build.VERSION.SDK_INT >= 33 && torchMax > 1) {
+                cm.turnOnTorchWithStrengthLevel(id, _torchLevel.value.coerceIn(1, torchMax))
+            } else {
+                cm.setTorchMode(id, on)
+            }
+        }.onSuccess { _torch.value = on }
+    }
+
+    fun toggleTorch(context: Context) = setTorch(context, !torchOn)
+
+    /** [fraction] 0..1. 0 turns it off; otherwise picks the nearest strength step. */
+    fun setTorchFraction(context: Context, fraction: Float) {
+        val id = torchId(context) ?: return
+        if (fraction <= 0.02f) {
+            setTorch(context, false)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 && torchMax > 1) {
+            val level = (fraction * torchMax).roundToInt().coerceIn(1, torchMax)
+            runCatching {
+                context.getSystemService(CameraManager::class.java).turnOnTorchWithStrengthLevel(id, level)
+            }.onSuccess {
+                _torchLevel.value = level
+                _torch.value = true
+            }
+        } else if (!torchOn) {
+            setTorch(context, true)
+        }
+    }
+
+    fun torchFraction(): Float = if (!torchOn) 0f else _torchLevel.value.toFloat() / torchMax.coerceAtLeast(1)
 
     // ---------------------------------------------------------- Do Not Disturb
 

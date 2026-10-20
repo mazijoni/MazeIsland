@@ -26,6 +26,15 @@ sealed interface IslandMode {
     data class Expanded(val startOnApps: Boolean) : IslandMode
 
     data class Notification(val event: NotifEvent, val replying: Boolean = false, val sent: Boolean = false) : IslandMode
+
+    /** iOS-style flashlight card with a brightness bar. */
+    data object Flashlight : IslandMode
+
+    /** Short system alert (charging, silent…). */
+    data class Alert(val alert: SystemAlert) : IslandMode
+
+    /** A live activity opened up (timer, call…). */
+    data class Activity(val key: String) : IslandMode
 }
 
 class IslandController(private val scope: CoroutineScope) {
@@ -43,6 +52,10 @@ class IslandController(private val scope: CoroutineScope) {
     /** True while typing a reply: the window must be focusable to get the keyboard. */
     private val _focusable = MutableStateFlow(false)
     val focusable: StateFlow<Boolean> = _focusable.asStateFlow()
+
+    /** -1 / +1 while the collapsed pill does a little "nudge" after a swipe. */
+    private val _nudge = MutableStateFlow(0)
+    val nudge: StateFlow<Int> = _nudge.asStateFlow()
 
     private var timer: Job? = null
     private var shrinkJob: Job? = null
@@ -81,7 +94,11 @@ class IslandController(private val scope: CoroutineScope) {
 
     /** Call on any interaction so the expanded island doesn't close under your finger. */
     fun poke() {
-        if (_mode.value is IslandMode.Expanded) autoCollapse(10_000)
+        when (_mode.value) {
+            is IslandMode.Expanded -> autoCollapse(10_000)
+            IslandMode.Flashlight, is IslandMode.Activity -> autoCollapse(6_000)
+            else -> Unit
+        }
     }
 
     fun showNotification(event: NotifEvent) {
@@ -90,6 +107,37 @@ class IslandController(private val scope: CoroutineScope) {
         if (current is IslandMode.Notification && current.replying) return
         set(IslandMode.Notification(event))
         autoCollapse(if (event.replyAction != null) 7_000 else 5_000)
+    }
+
+    fun showFlashlight() {
+        set(IslandMode.Flashlight)
+        autoCollapse(6_000)
+    }
+
+    fun showActivity(key: String, holdMs: Long = 8_000) {
+        set(IslandMode.Activity(key))
+        if (holdMs > 0) autoCollapse(holdMs) else timer?.cancel()
+    }
+
+    /** Alerts only show while nothing else is open. */
+    fun showAlert(alert: SystemAlert) {
+        val current = _mode.value
+        if (current != IslandMode.Collapsed && current !is IslandMode.Alert) return
+        set(IslandMode.Alert(alert))
+        autoCollapse(2_400)
+    }
+
+    fun nudge(direction: Int) {
+        _nudge.value = direction
+        scope.launch {
+            delay(140)
+            _nudge.value = 0
+        }
+    }
+
+    /** Keep a card open while it's being used (sliders etc.). */
+    fun keepOpen(ms: Long = 6_000) {
+        if (_mode.value != IslandMode.Collapsed) autoCollapse(ms)
     }
 
     fun startReply() {
@@ -163,3 +211,42 @@ class IslandRootView(context: Context, private val onOutsideTouch: () -> Unit) :
         return super.dispatchTouchEvent(ev)
     }
 }
+
+/** What the collapsed island shows. */
+enum class Compact { NONE, MEDIA, ACTIVITY, TORCH }
+
+/**
+ * The collapsed island's content. Like iOS, with two things going on, the most important one
+ * stays in the pill and the second one detaches into a small round bubble next to it.
+ */
+data class CollapsedLayout(val main: Compact, val bubble: Compact) {
+    companion object {
+        fun of(
+            mediaPlaying: Boolean,
+            activities: List<com.mazedev.island.media.LiveActivity>,
+            torch: Boolean,
+        ): CollapsedLayout {
+            val main = when {
+                activities.isNotEmpty() -> Compact.ACTIVITY
+                mediaPlaying -> Compact.MEDIA
+                torch -> Compact.TORCH
+                else -> Compact.NONE
+            }
+            val bubble = when {
+                main == Compact.ACTIVITY && mediaPlaying -> Compact.MEDIA
+                main != Compact.TORCH && main != Compact.NONE && torch -> Compact.TORCH
+                else -> Compact.NONE
+            }
+            return CollapsedLayout(main, bubble)
+        }
+    }
+}
+
+/** Width of the collapsed main pill in dp. */
+fun collapsedWidthDp(cfg: com.mazedev.island.IslandConfig, main: Compact): Float = when (main) {
+    Compact.NONE -> if (cfg.style == com.mazedev.island.IslandStyle.HIDDEN) cfg.height else cfg.width
+    Compact.MEDIA, Compact.ACTIVITY -> cfg.width + IslandService.MINI_EXTRA_DP
+    Compact.TORCH -> cfg.width + 56f
+}
+
+const val BUBBLE_GAP_DP = 6f

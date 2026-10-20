@@ -1,6 +1,7 @@
 package com.mazedev.island.media
 
 import android.app.Notification
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.graphics.Bitmap
 import android.media.MediaMetadata
@@ -157,6 +158,10 @@ class MediaListenerService : NotificationListenerService() {
             accent = art?.accent ?: 0xFF1DB954.toInt(),
             canPlayFromUri = (actions and PlaybackState.ACTION_PLAY_FROM_URI) != 0L,
             lastActiveAt = lastActive[pkg] ?: 0L,
+            durationMs = md.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0L),
+            positionMs = state?.position ?: 0L,
+            positionUpdatedAt = state?.lastPositionUpdateTime ?: 0L,
+            speed = state?.playbackSpeed?.takeIf { it > 0f } ?: 1f,
         )
     }
 
@@ -194,6 +199,15 @@ class MediaListenerService : NotificationListenerService() {
         val extras = n.extras ?: return
 
         if (extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) return // music player notification
+
+        // Timers, stopwatches, calls, navigation… become live activities in the island.
+        if (Prefs.island.value.liveActivities) {
+            val live = liveActivityFrom(sbn, n)
+            if (live != null) {
+                MediaRepository.putActivity(live)
+                return
+            }
+        }
         if (sbn.isOngoing) return
         if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
         if (n.category in IGNORED_CATEGORIES) return
@@ -280,7 +294,62 @@ class MediaListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
-        sbn?.let { lastShown.remove(it.key) }
+        sbn ?: return
+        lastShown.remove(sbn.key)
+        MediaRepository.removeActivity(sbn.key)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun liveActivityFrom(sbn: StatusBarNotification, n: Notification): LiveActivity? {
+        val extras = n.extras
+        val category = n.category
+        val chrono = extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
+        val isCall = category == Notification.CATEGORY_CALL
+        val kind = when {
+            isCall -> LiveActivity.Kind.CALL
+            category == Notification.CATEGORY_NAVIGATION -> LiveActivity.Kind.NAVIGATION
+            category == Notification.CATEGORY_STOPWATCH || chrono -> LiveActivity.Kind.TIMER
+            else -> return null
+        }
+        if (!sbn.isOngoing && !isCall) return null
+        // An incoming call has a full-screen "ringing" intent; a call in progress shows its duration instead.
+        val ringing = isCall && n.fullScreenIntent != null && !chrono
+
+        val title = (extras.getCharSequence(Notification.EXTRA_TITLE) ?: Apps.label(this, sbn.packageName)).toString()
+        val text = (extras.getCharSequence(Notification.EXTRA_TEXT) ?: "").toString()
+        val icon = runCatching {
+            (if (isCall) n.getLargeIcon()?.loadDrawable(this)?.toBitmap(96, 96) else null)
+                ?: packageManager.getApplicationIcon(sbn.packageName).toBitmap(96, 96)
+        }.getOrNull()
+
+        // Calls (CallStyle) carry their answer / decline / hang-up intents in extras.
+        fun intent(key: String) = runCatching { extras.getParcelable<PendingIntent>(key) }.getOrNull()
+        val answer = intent("android.answerIntent")
+        val decline = intent("android.declineIntent")
+        val hangUp = intent("android.hangUpIntent")
+        val actions = buildList {
+            if (decline != null) add("Decline" to decline)
+            if (hangUp != null) add("End" to hangUp)
+            if (answer != null) add("Answer" to answer)
+            if (isEmpty()) {
+                n.actions?.take(3)?.forEach { a -> a.actionIntent?.let { add(a.title.toString() to it) } }
+            }
+        }
+        return LiveActivity(
+            key = sbn.key,
+            packageName = sbn.packageName,
+            appName = appNames.getOrPut(sbn.packageName) { Apps.label(this, sbn.packageName) },
+            kind = kind,
+            title = title,
+            text = text,
+            icon = icon,
+            chronoBase = if (chrono || (isCall && !ringing)) n.`when` else 0L,
+            countDown = extras.getBoolean(Notification.EXTRA_CHRONOMETER_COUNT_DOWN),
+            accent = if (n.color != 0) n.color else 0xFFFF9F0A.toInt(),
+            contentIntent = n.contentIntent,
+            actions = actions,
+            ringing = ringing,
+        )
     }
 
     companion object {
