@@ -55,6 +55,11 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import android.view.HapticFeedbackConstants
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -288,27 +293,49 @@ internal fun CameraPage(active: Boolean, controller: IslandController) {
                 },
         )
         error?.let { CenterNote(it) }
-        // Shutter
+        // Shutter: fires the moment your finger touches it (like a camera app), so a slight slide
+        // can't turn the tap into a swipe between tabs and get it ignored.
+        val view = LocalView.current
+        val pressScale = remember { Animatable(1f) }
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 8.dp)
-                .size(46.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.22f))
-                .noRippleClick {
-                    controller.poke()
-                    takeSelfie(context, capture) { ok ->
-                        Toast.makeText(context, if (ok) "Selfie saved to Photos" else "Couldn't save the photo", Toast.LENGTH_SHORT).show()
-                    }
-                    scope.launch {
-                        flash.snapTo(0.8f)
-                        flash.animateTo(0f, tween(350))
+                .padding(bottom = 4.dp)
+                .size(64.dp) // bigger touch area than the visible button
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
+                        view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                        controller.poke()
+                        takeSelfie(context, capture) { ok ->
+                            if (!ok) Toast.makeText(context, "Couldn't save the photo", Toast.LENGTH_SHORT).show()
+                        }
+                        scope.launch {
+                            flash.snapTo(0.8f)
+                            flash.animateTo(0f, tween(350))
+                        }
+                        scope.launch { pressScale.animateTo(0.85f, tween(80)) }
+                        // Swallow the rest of this touch so the pager doesn't treat it as a swipe.
+                        do {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                        } while (event.changes.any { it.pressed })
+                        scope.launch { pressScale.animateTo(1f, tween(120)) }
                     }
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Box(Modifier.size(36.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.9f)))
+            Box(
+                Modifier
+                    .size(46.dp)
+                    .graphicsLayer { scaleX = pressScale.value; scaleY = pressScale.value }
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.22f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(Modifier.size(36.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.9f)))
+            }
         }
         if (flash.value > 0f) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = flash.value)))
     }
