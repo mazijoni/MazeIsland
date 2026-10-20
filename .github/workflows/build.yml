@@ -2,15 +2,19 @@ name: Build APK
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -21,8 +25,15 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk MazeIsland.apk
 
-      - uses: actions/upload-artifact@v4
+      # Publishes the APK as the "latest" release, so this link always gets the newest build:
+      # https://github.com/mazijoni/MazeIsland/releases/latest/download/MazeIsland.apk
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
         with:
-          name: MazeIsland-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          tag_name: build-${{ github.run_number }}
+          name: Maze Island build ${{ github.run_number }}
+          body: "Automatic build of ${{ github.sha }}. Download MazeIsland.apk below and open it on your phone."
+          files: MazeIsland.apk
+          make_latest: true
