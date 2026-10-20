@@ -42,6 +42,9 @@ data class IslandConfig(
     val appGrayscale: Boolean = false,
     /** Spotify widget switches to the doorbell snapshot for a couple of minutes after a ring. */
     val doorbellTakeover: Boolean = true,
+    /** Quick controls in the app tab, in display order (ControlKind names). */
+    val controls: List<String> = listOf("BRIGHTNESS", "FLASHLIGHT", "DND"),
+    val showSettingsTile: Boolean = true,
     val menuApps: List<String> = listOf("com.spotify.music"),
 )
 
@@ -72,6 +75,8 @@ object Prefs {
             appBrightness = sp.getFloat("appBrightness", d.appBrightness),
             appGrayscale = sp.getBoolean("appGrayscale", d.appGrayscale),
             doorbellTakeover = sp.getBoolean("doorbellTakeover", d.doorbellTakeover),
+            controls = sp.getString("controls", null)?.split(",")?.filter { it.isNotBlank() } ?: d.controls,
+            showSettingsTile = sp.getBoolean("showSettingsTile", d.showSettingsTile),
             menuApps = sp.getString("menuApps", null)
                 ?.split(",")
                 ?.filter { it.isNotBlank() }
@@ -101,6 +106,8 @@ object Prefs {
             .putFloat("appBrightness", c.appBrightness)
             .putBoolean("appGrayscale", c.appGrayscale)
             .putBoolean("doorbellTakeover", c.doorbellTakeover)
+            .putString("controls", c.controls.joinToString(","))
+            .putBoolean("showSettingsTile", c.showSettingsTile)
             .putString("menuApps", c.menuApps.joinToString(","))
             .apply()
     }

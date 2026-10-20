@@ -57,6 +57,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -70,6 +72,8 @@ import com.mazedev.island.IslandPreview
 import com.mazedev.island.IslandStyle
 import com.mazedev.island.PreviewMode
 import com.mazedev.island.Prefs
+import com.mazedev.island.util.ControlKind
+import com.mazedev.island.util.Controls
 import com.mazedev.island.util.HeadsUp
 import com.mazedev.island.media.MediaRepository
 import com.mazedev.island.util.AppEntry
@@ -105,6 +109,7 @@ fun SettingsScreen() {
             item { NowPlayingCard() }
             item { WidgetCard() }
             item { IslandCard() }
+            item { ControlsCard() }
             item { DoorbellCard() }
         }
     }
@@ -385,6 +390,10 @@ private fun IslandCard() {
             }
             OutlinedButton(onClick = { picking = true }) { Text("Choose") }
         }
+        ToggleRow("Show Settings button in the island", cfg.showSettingsTile) { v ->
+            Prefs.updateIsland { it.copy(showSettingsTile = v) }
+            flashAppsPreview()
+        }
         ToggleRow("Themed icons (match Pixel's themed icons)", cfg.themedIcons) { v ->
             Prefs.updateIsland { it.copy(themedIcons = v) }
             flashAppsPreview()
@@ -619,5 +628,77 @@ private fun DoorbellCard() {
                 awm.requestPinAppWidget(ComponentName(context, DoorbellWidgetReceiver::class.java), null, null)
             }
         }) { Text("Add doorbell widget") }
+    }
+}
+
+// ---------------------------------------------------------- quick controls
+
+@Composable
+private fun ControlsCard() {
+    val context = LocalContext.current
+    val cfg by Prefs.island.collectAsState()
+    var canWrite by remember { mutableStateOf(Controls.canWriteSettings(context)) }
+    var hasPolicy by remember { mutableStateOf(Controls.hasPolicyAccess(context)) }
+    LifecycleResumeEffect(Unit) {
+        canWrite = Controls.canWriteSettings(context)
+        hasPolicy = Controls.hasPolicyAccess(context)
+        onPauseOrDispose { }
+    }
+    val chosen = cfg.controls.mapNotNull { runCatching { ControlKind.valueOf(it) }.getOrNull() }
+
+    Section("Island quick controls") {
+        Text(
+            "Shown at the top of the island's app tab. Sliders go on top, buttons sit in the grid with your apps.",
+            color = Muted,
+            fontSize = 13.sp,
+        )
+        Spacer(Modifier.height(6.dp))
+        ControlKind.entries.forEach { kind ->
+            val on = kind in chosen
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        val next = if (on) chosen - kind else chosen + kind
+                        Prefs.updateIsland { it.copy(controls = next.map { k -> k.name }) }
+                        flashAppsPreview()
+                    }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Image(
+                    painter = painterResource(kind.icon),
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp),
+                    colorFilter = ColorFilter.tint(if (on) MaterialTheme.colorScheme.primary else Muted),
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(kind.label)
+                    if (kind.isSlider) Text("Slider", color = Muted, fontSize = 11.sp)
+                }
+                Checkbox(checked = on, onCheckedChange = null)
+            }
+        }
+
+        val needWrite = chosen.any { it.needsWriteSettings } && !canWrite
+        val needPolicy = chosen.any { it.needsPolicyAccess } && !hasPolicy
+        if (needWrite || needPolicy) {
+            Spacer(Modifier.height(8.dp))
+            Text("A couple of controls need one more permission:", color = Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (needWrite) {
+                    Button(onClick = { context.startActivity(Controls.writeSettingsIntent(context)) }) {
+                        Text("Modify system settings", fontSize = 12.sp)
+                    }
+                }
+                if (needPolicy) {
+                    Button(onClick = { context.startActivity(Controls.policyAccessIntent()) }) {
+                        Text("Do Not Disturb access", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
     }
 }

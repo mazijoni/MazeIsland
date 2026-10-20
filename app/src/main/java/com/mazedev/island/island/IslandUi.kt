@@ -2,6 +2,7 @@ package com.mazedev.island.island
 
 import android.content.Intent
 import android.graphics.Bitmap
+import android.media.AudioManager
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -18,6 +19,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.focus.FocusRequester
@@ -89,6 +93,8 @@ import com.mazedev.island.media.MediaState
 import com.mazedev.island.ui.MainActivity
 import com.mazedev.island.util.AppEntry
 import com.mazedev.island.util.Apps
+import com.mazedev.island.util.ControlKind
+import com.mazedev.island.util.Controls
 import com.mazedev.island.util.sendCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -99,15 +105,30 @@ private enum class Face { IDLE, MINI, EXPANDED, NOTIF }
 private val Dim = Color(0xFFA6A6AE)
 private val Soft = Color(0xE0FFFFFF)
 
-/** Height of the swipeable media/app area: fits the media controls, or the app grid if taller. */
-private fun pageHeight(cfg: IslandConfig): Dp {
+/** What the app tab contains, derived from settings. */
+private class AppTab(cfg: IslandConfig) {
+    val kinds = cfg.controls.mapNotNull { runCatching { ControlKind.valueOf(it) }.getOrNull() }
+    val sliders = kinds.filter { it.isSlider }
+    val toggles = kinds.filterNot { it.isSlider }
     val cols = cfg.appColumns.coerceIn(3, 7)
-    val tiles = minOf(cfg.menuApps.size, cols * 2 - 1) + 1 // + Settings tile
-    val rows = (tiles + cols - 1) / cols
-    val tileH = cfg.appIconSize + (if (cfg.appLabels) 19f else 0f)
-    val grid = rows * tileH + (rows - 1) * 10f + 14f
-    return maxOf(150f, grid).dp
+    private val fixedTiles = toggles.size + (if (cfg.showSettingsTile) 1 else 0)
+    val maxApps = (cols * 3 - fixedTiles).coerceAtLeast(0)
+    private val items = fixedTiles + minOf(cfg.menuApps.size, maxApps)
+    val rows = (items + cols - 1) / cols
+    private val tileH = cfg.appIconSize + (if (cfg.appLabels) 19f else 0f)
+    val height: Dp = run {
+        val sliderH = sliders.size * SLIDER_H + (if (sliders.isNotEmpty() && rows > 0) 6f else 0f)
+        val grid = if (rows > 0) rows * tileH + (rows - 1) * 10f else 0f
+        maxOf(150f, sliderH + grid + 14f).dp
+    }
+
+    companion object {
+        const val SLIDER_H = 48f
+    }
 }
+
+/** Height of the swipeable media/app area: fits the media controls, or the app tab if taller. */
+private fun pageHeight(cfg: IslandConfig): Dp = AppTab(cfg).height
 
 @Composable
 fun IslandUi(controller: IslandController) {
@@ -380,27 +401,85 @@ private fun MediaPage(s: MediaState, controller: IslandController) {
     }
 }
 
-private class MenuTile(val label: String, val icon: ImageBitmap?, val onClick: () -> Unit)
+private class MenuTile(
+    val label: String,
+    val icon: ImageBitmap? = null,
+    @DrawableRes val res: Int? = null,
+    val active: Boolean = false,
+    val onClick: () -> Unit,
+)
 
 @Composable
 private fun AppsPage(cfg: IslandConfig, controller: IslandController) {
     val context = LocalContext.current
-    val cols = cfg.appColumns.coerceIn(3, 7)
-    val maxApps = cols * 2 - 1
-    val apps by produceState(initialValue = emptyList<AppEntry>(), cfg.menuApps, cfg.themedIcons, maxApps) {
-        value = withContext(Dispatchers.IO) { Apps.load(context, cfg.menuApps.take(maxApps), cfg.themedIcons) }
+    val tab = remember(cfg) { AppTab(cfg) }
+    val apps by produceState(initialValue = emptyList<AppEntry>(), cfg.menuApps, cfg.themedIcons, tab.maxApps) {
+        value = withContext(Dispatchers.IO) { Apps.load(context, cfg.menuApps.take(tab.maxApps), cfg.themedIcons) }
     }
-    val tiles = apps.map { app ->
-        MenuTile(app.label, app.icon) {
-            Apps.launch(context, app.packageName)
-            controller.collapse()
+
+    // Toggle states are re-read every second while the tab is open (they can change elsewhere).
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        Controls.prepare(context)
+        while (true) {
+            delay(1_000)
+            tick++
         }
-    } + MenuTile("Settings", null) {
-        context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    fun open(intent: Intent) {
+        runCatching { context.startActivity(intent) }
         controller.collapse()
     }
 
-    // Brightness + optional black & white, applied to every icon.
+    val controlTiles = tab.toggles.map { kind ->
+        check(tick >= 0) // reading tick makes these tiles refresh every second
+        when (kind) {
+            ControlKind.FLASHLIGHT -> MenuTile(kind.label, res = kind.icon, active = Controls.torchOn) {
+                Controls.toggleTorch(context); tick++; controller.poke()
+            }
+            ControlKind.DND -> MenuTile(kind.label, res = kind.icon, active = Controls.dndOn(context)) {
+                if (Controls.toggleDnd(context)) { tick++; controller.poke() } else open(Controls.policyAccessIntent())
+            }
+            ControlKind.RINGER -> {
+                val mode = Controls.ringerMode(context)
+                val (label, icon) = when (mode) {
+                    AudioManager.RINGER_MODE_VIBRATE -> "Vibrate" to R.drawable.ic_vibrate
+                    AudioManager.RINGER_MODE_SILENT -> "Silent" to R.drawable.ic_bell_off
+                    else -> "Sound" to R.drawable.ic_bell
+                }
+                MenuTile(label, res = icon, active = mode != AudioManager.RINGER_MODE_NORMAL) {
+                    Controls.cycleRinger(context); tick++; controller.poke()
+                }
+            }
+            ControlKind.AUTO_ROTATE -> MenuTile(kind.label, res = kind.icon, active = Controls.autoRotate(context)) {
+                if (Controls.toggleAutoRotate(context)) { tick++; controller.poke() } else open(Controls.writeSettingsIntent(context))
+            }
+            ControlKind.BATTERY -> {
+                val b = Controls.battery(context)
+                MenuTile((if (b.charging) "⚡" else "") + "${b.percent}%", res = kind.icon, active = b.charging) {
+                    open(Controls.batterySettings())
+                }
+            }
+            ControlKind.INTERNET -> MenuTile(kind.label, res = kind.icon) { open(Controls.internetPanel()) }
+            ControlKind.BLUETOOTH -> MenuTile(kind.label, res = kind.icon) { open(Controls.bluetoothSettings()) }
+            ControlKind.BRIGHTNESS, ControlKind.VOLUME -> MenuTile(kind.label, res = kind.icon) {}
+        }
+    }
+    val appTiles = apps.map { app ->
+        MenuTile(app.label, icon = app.icon) {
+            Apps.launch(context, app.packageName)
+            controller.collapse()
+        }
+    }
+    val settingsTile = if (cfg.showSettingsTile) {
+        listOf(MenuTile("Settings", res = R.drawable.ic_settings) {
+            open(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        })
+    } else emptyList()
+    val tiles = controlTiles + appTiles + settingsTile
+
+    // Brightness + optional black & white, applied to every app icon.
     val filter = remember(cfg.appBrightness, cfg.appGrayscale) {
         val m = ColorMatrix()
         if (cfg.appGrayscale) m.setToSaturation(0f)
@@ -412,15 +491,74 @@ private fun AppsPage(cfg: IslandConfig, controller: IslandController) {
     val tileWidth = maxOf(iconSize + 12.dp, 52.dp)
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 6.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
     ) {
-        tiles.chunked(cols).forEach { row ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                row.forEach { AppTile(it, iconSize, tileWidth, cfg.appLabels, filter) }
-                repeat(cols - row.size) { Spacer(Modifier.width(tileWidth)) }
+        tab.sliders.forEach { kind ->
+            when (kind) {
+                ControlKind.BRIGHTNESS -> {
+                    var value by remember { mutableStateOf(Controls.brightness(context)) }
+                    GlassSlider(kind.icon, value) { v ->
+                        controller.poke()
+                        if (Controls.setBrightness(context, v)) value = v
+                        else open(Controls.writeSettingsIntent(context))
+                    }
+                }
+                ControlKind.VOLUME -> {
+                    var value by remember { mutableStateOf(Controls.volume(context)) }
+                    GlassSlider(kind.icon, value) { v ->
+                        controller.poke()
+                        Controls.setVolume(context, v)
+                        value = v
+                    }
+                }
+                else -> Unit
             }
         }
+        tiles.chunked(tab.cols).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                row.forEach { AppTile(it, iconSize, tileWidth, cfg.appLabels, filter) }
+                repeat(tab.cols - row.size) { Spacer(Modifier.width(tileWidth)) }
+            }
+        }
+    }
+}
+
+/** Frosted pill slider (like Control Center): drag or tap anywhere along it. */
+@Composable
+private fun GlassSlider(@DrawableRes icon: Int, value: Float, onChange: (Float) -> Unit) {
+    var widthPx by remember { mutableStateOf(1) }
+    val shape = RoundedCornerShape(20.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height((AppTab.SLIDER_H - 8f).dp)
+            .onSizeChanged { widthPx = it.width.coerceAtLeast(1) }
+            .glass(shape)
+            .pointerInput(Unit) {
+                detectTapGestures { onChange((it.x / widthPx).coerceIn(0f, 1f)) }
+            }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures { change, _ ->
+                    change.consume()
+                    onChange((change.position.x / widthPx).coerceIn(0f, 1f))
+                }
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Box(
+            Modifier
+                .fillMaxHeight()
+                .fillMaxWidth(value.coerceIn(0.06f, 1f))
+                .clip(shape)
+                .background(Color.White.copy(alpha = 0.26f))
+        )
+        Image(
+            painter = painterResource(icon),
+            contentDescription = null,
+            modifier = Modifier.padding(start = 12.dp).size(18.dp),
+            colorFilter = ColorFilter.tint(Soft),
+        )
     }
 }
 
@@ -430,23 +568,25 @@ private fun AppTile(tile: MenuTile, iconSize: Dp, tileWidth: Dp, showLabel: Bool
         modifier = Modifier.width(tileWidth).noRippleClick(tile.onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        if (tile.icon != null) {
-            Image(
+        when {
+            tile.icon != null -> Image(
                 bitmap = tile.icon,
                 contentDescription = tile.label,
                 modifier = Modifier.size(iconSize),
                 colorFilter = filter,
             )
-        } else {
-            Box(
-                Modifier.size(iconSize).glass(CircleShape),
+            tile.res != null -> Box(
+                Modifier
+                    .size(iconSize)
+                    .glass(CircleShape, strong = tile.active)
+                    .then(if (tile.active) Modifier.background(Color.White.copy(alpha = 0.18f)) else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
                 Image(
-                    painter = painterResource(R.drawable.ic_settings),
-                    contentDescription = null,
-                    modifier = Modifier.size(iconSize / 2),
-                    colorFilter = ColorFilter.tint(Soft),
+                    painter = painterResource(tile.res),
+                    contentDescription = tile.label,
+                    modifier = Modifier.size(iconSize * 0.46f),
+                    colorFilter = ColorFilter.tint(if (tile.active) Color.White else Soft.copy(alpha = 0.75f)),
                 )
             }
         }

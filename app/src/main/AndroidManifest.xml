@@ -11,6 +11,13 @@
         android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- Island quick controls: brightness / auto-rotate (user grants "Modify system settings"),
+         Do Not Disturb (user grants "Do Not Disturb access"). -->
+    <uses-permission
+        android:name="android.permission.WRITE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <!-- Lets us list launchable apps for the island app menu (Android 11+) -->
     <queries>
         <intent>

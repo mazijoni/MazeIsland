@@ -262,7 +262,7 @@ class IslandService : AccessibilityService() {
         const val MINI_EXTRA_DP = 96f
 
         /** Room below the camera for the expanded card (pager + dots, or a reply box). */
-        const val EXPANDED_CONTENT_DP = 360f
+        const val EXPANDED_CONTENT_DP = 440f
 
         fun expandedWidthDp(screenWidthDp: Int, marginDp: Float): Float =
             min(screenWidthDp - 2f * marginDp, 480f)
