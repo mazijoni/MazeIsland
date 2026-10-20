@@ -83,7 +83,9 @@ class IslandService : AccessibilityService() {
         Controls.prepare(this)
         BtDevices.start(this)
         val tapView = View(this)
-        val detector = GestureDetector(this, IslandGestures(tapView))
+        val detector = GestureDetector(this, IslandGestures(tapView)).apply {
+            setOnDoubleTapListener(null) // own, faster double-tap handling (see IslandGestures)
+        }
         @Suppress("ClickableViewAccessibility")
         tapView.setOnTouchListener { _, ev -> detector.onTouchEvent(ev); true }
         windowManager.addView(tapView, touchParams(Prefs.island.value, true, currentLayout()))
@@ -180,19 +182,39 @@ class IslandService : AccessibilityService() {
 
         override fun onDown(e: MotionEvent) = true
 
+        private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        private var pendingTap: Runnable? = null
+        private var lastTapUp = 0L
+
+        /**
+         * Without a double-tap shortcut, a tap opens the island right away. With one, a second
+         * tap within [DOUBLE_TAP_MS] runs the shortcut, otherwise the first tap opens the island.
+         * (Android's default waits ~300 ms and drops taps that wobble; this is shorter and simpler.)
+         */
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (!doubleTapEnabled) tap(e.x)
-            return true
-        }
-
-        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-            if (doubleTapEnabled) tap(e.x)
-            return true
-        }
-
-        override fun onDoubleTap(e: MotionEvent): Boolean {
-            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-            runShortcut(Shortcut.from(Prefs.island.value.doubleTap))
+            val now = e.eventTime
+            val x = e.x
+            if (!doubleTapEnabled) {
+                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                tap(x)
+                return true
+            }
+            val pending = pendingTap
+            if (pending != null && now - lastTapUp <= DOUBLE_TAP_MS) {
+                handler.removeCallbacks(pending)
+                pendingTap = null
+                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                runShortcut(Shortcut.from(Prefs.island.value.doubleTap))
+            } else {
+                lastTapUp = now
+                val r = Runnable {
+                    pendingTap = null
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    tap(x)
+                }
+                pendingTap = r
+                handler.postDelayed(r, DOUBLE_TAP_MS)
+            }
             return true
         }
 
@@ -426,15 +448,15 @@ class IslandService : AccessibilityService() {
 
     private fun touchParams(cfg: IslandConfig, collapsed: Boolean, layout: CollapsedLayout): WindowManager.LayoutParams {
         val density = resources.displayMetrics.density
-        // Exactly the pill's size (+ the bubble on both sides, to stay centered), so the rest of
-        // the status bar stays touchable (shade pull-down).
+        // The pill (+ the bubble on both sides, to stay centered) plus a little extra all round so
+        // near-misses still count, while most of the status bar stays free for pulling down the shade.
         val bubbleExtra = if (layout.bubble != Compact.NONE) 2 * (BUBBLE_GAP_DP + cfg.height) else 0f
-        val pillWidthDp = collapsedWidthDp(cfg, layout.main) + bubbleExtra
+        val pillWidthDp = maxOf(collapsedWidthDp(cfg, layout.main) + bubbleExtra + 2 * TOUCH_SLOP_DP, 80f)
         var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
         if (!collapsed) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         return baseParams(
             (pillWidthDp * density).roundToInt(),
-            (cfg.height * density).roundToInt(),
+            ((cfg.height + TOUCH_SLOP_DP) * density).roundToInt(),
             cfg,
             flags,
         )
@@ -475,6 +497,12 @@ class IslandService : AccessibilityService() {
     }
 
     companion object {
+        /** Extra touch area around the collapsed pill (dp). */
+        const val TOUCH_SLOP_DP = 12f
+
+        /** Max gap between the two taps of a double tap. */
+        const val DOUBLE_TAP_MS = 230L
+
         /** Extra width of the collapsed "now playing" pill (cover on the left, bars on the right). */
         const val MINI_EXTRA_DP = 96f
 
