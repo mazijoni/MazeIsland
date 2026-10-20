@@ -137,7 +137,7 @@ class MediaListenerService : NotificationListenerService() {
         val raw = md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: md.getBitmap(MediaMetadata.METADATA_KEY_ART)
             ?: md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
-        val art = artFor(c.packageName, raw)
+        val art = artFor(c.packageName, raw) ?: fallbackArt(c.packageName, md)
         val state = c.playbackState
         val playing = state?.state == PlaybackState.STATE_PLAYING
         val pkg = c.packageName
@@ -166,6 +166,56 @@ class MediaListenerService : NotificationListenerService() {
     }
 
     /** Processes the cover once per track (not on every playback tick). */
+    // ------------------------------------------------- fallback when there's no cover
+
+    private val browserSite = HashMap<String, String>()
+    private val fallbackCache = HashMap<String, Art>()
+    private val faviconLoading = HashSet<String>()
+
+    /**
+     * No cover: use the website's logo for browser media (YouTube in Chrome etc.),
+     * otherwise the app's own icon.
+     */
+    private fun fallbackArt(pkg: String, md: MediaMetadata): Art? {
+        if (pkg in BROWSERS) {
+            val domain = browserSite[pkg] ?: listOf(
+                MediaMetadata.METADATA_KEY_ALBUM,
+                MediaMetadata.METADATA_KEY_ARTIST,
+                MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE,
+                MediaMetadata.METADATA_KEY_DISPLAY_DESCRIPTION,
+            ).firstNotNullOfOrNull { k -> md.getString(k)?.let { domainOf(it) } }
+            if (domain != null) {
+                fallbackCache["site:$domain"]?.let { return it }
+                loadFavicon(domain)
+            }
+        }
+        val key = "app:$pkg"
+        fallbackCache[key]?.let { return it }
+        return runCatching {
+            val icon = packageManager.getApplicationIcon(pkg).toBitmap(256, 256)
+            makeArt(icon)
+        }.getOrNull()?.also { fallbackCache[key] = it }
+    }
+
+    private fun makeArt(bmp: Bitmap): Art {
+        val scaled = BitmapUtils.scaleToMax(bmp, 320)
+        return Art(bmp, scaled, BitmapUtils.blur(scaled), BitmapUtils.accent(scaled))
+    }
+
+    /** Fetches the site's logo once, then refreshes so it shows up. */
+    private fun loadFavicon(domain: String) {
+        if (!faviconLoading.add(domain)) return
+        scope.launch {
+            val bmp = withContext(Dispatchers.IO) { Favicons.load(applicationContext, domain) }
+            if (bmp != null) {
+                fallbackCache["site:$domain"] = makeArt(bmp)
+                refresh()
+            } else {
+                faviconLoading.remove(domain) // try again next time
+            }
+        }
+    }
+
     private fun artFor(pkg: String, raw: Bitmap?): Art? {
         if (raw == null) return null
         artCache[pkg]?.let { if (it.source === raw) return it }
@@ -198,7 +248,19 @@ class MediaListenerService : NotificationListenerService() {
         val n = sbn.notification ?: return
         val extras = n.extras ?: return
 
-        if (extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) return // music player notification
+        if (extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) {
+            // Music player notification. Browsers put the website ("youtube.com") in the sub text,
+            // which we use to show the site's logo when there's no cover.
+            if (sbn.packageName in BROWSERS) {
+                extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.let { domainOf(it.toString()) }?.let {
+                    if (browserSite[sbn.packageName] != it) {
+                        browserSite[sbn.packageName] = it
+                        refresh()
+                    }
+                }
+            }
+            return
+        }
 
         // Timers, stopwatches, calls, navigation… become live activities in the island.
         if (Prefs.island.value.liveActivities) {
@@ -354,6 +416,21 @@ class MediaListenerService : NotificationListenerService() {
 
     companion object {
         private const val TAG = "MediaListener"
+
+        val BROWSERS = setOf(
+            "com.android.chrome", "com.chrome.beta", "com.chrome.dev", "com.chrome.canary",
+            "org.mozilla.firefox", "org.mozilla.firefox_beta", "org.mozilla.fenix", "org.mozilla.focus",
+            "com.brave.browser", "com.microsoft.emmx", "com.opera.browser", "com.opera.gx",
+            "com.vivaldi.browser", "com.sec.android.app.sbrowser", "com.duckduckgo.mobile.android",
+            "com.kiwibrowser.browser", "app.vanadium.browser",
+        )
+
+        private val DOMAIN = Regex("""(?i)\b((?:[a-z0-9-]+\.)+[a-z]{2,})\b""")
+
+        /** "www.youtube.com" / "https://music.youtube.com/watch…" → "music.youtube.com". */
+        fun domainOf(text: String): String? =
+            DOMAIN.find(text)?.groupValues?.get(1)?.lowercase()?.removePrefix("www.")
+                ?.takeIf { !it.endsWith(".mp3") && !it.endsWith(".mp4") }
         private val IGNORED_CATEGORIES = setOf(
             Notification.CATEGORY_SERVICE,
             Notification.CATEGORY_PROGRESS,
