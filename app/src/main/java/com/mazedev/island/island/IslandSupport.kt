@@ -35,6 +35,9 @@ sealed interface IslandMode {
 
     /** A live activity opened up (timer, call…). */
     data class Activity(val key: String) : IslandMode
+
+    /** A YouTube video playing inside the island. */
+    data class Video(val videoId: String) : IslandMode
 }
 
 class IslandController(private val scope: CoroutineScope) {
@@ -56,6 +59,21 @@ class IslandController(private val scope: CoroutineScope) {
     /** -1 / +1 while the collapsed pill does a little "nudge" after a swipe. */
     private val _nudge = MutableStateFlow(0)
     val nudge: StateFlow<Int> = _nudge.asStateFlow()
+
+    /**
+     * Pinned: the card stays open until unpinned. Notifications still pop up, and the island
+     * goes back to the pinned card afterwards.
+     */
+    private val _pinned = MutableStateFlow(false)
+    val pinned: StateFlow<Boolean> = _pinned.asStateFlow()
+    private var pinnedMode: IslandMode? = null
+
+    /** Height of the pinned card (px), so the window can be cut to just the card. */
+    private val _pinnedHeightPx = MutableStateFlow(0)
+    val pinnedHeightPx: StateFlow<Int> = _pinnedHeightPx.asStateFlow()
+
+    /** Runs a system action (home, …); set by the accessibility service. */
+    var globalAction: (Int) -> Unit = {}
 
     private var timer: Job? = null
     private var shrinkJob: Job? = null
@@ -87,13 +105,68 @@ class IslandController(private val scope: CoroutineScope) {
         }
     }
 
+    /** Closes the island, unpinning it. */
     fun collapse() {
         timer?.cancel()
+        unpinInternal()
         set(IslandMode.Collapsed)
+    }
+
+    /** Tap outside / back: closes unless pinned. */
+    fun dismiss() {
+        if (_pinned.value) {
+            // Leave a pop-up (notification…) and go back to the pinned card.
+            if (_mode.value != pinnedMode) pinnedMode?.let { set(it) }
+            return
+        }
+        collapse()
+    }
+
+    fun togglePin() {
+        if (_pinned.value) {
+            unpinInternal()
+            autoCollapse(4_000)
+        } else {
+            val m = _mode.value
+            if (m is IslandMode.Expanded || m is IslandMode.Video) {
+                _pinned.value = true
+                pinnedMode = m
+                timer?.cancel()
+            }
+        }
+    }
+
+    private fun unpinInternal() {
+        _pinned.value = false
+        pinnedMode = null
+        _pinnedHeightPx.value = 0
+    }
+
+    /**
+     * Picture-in-picture pop out: going to the home screen makes YouTube / Spotify / most video
+     * apps shrink their video into Android's floating window.
+     */
+    fun popOut() {
+        collapse()
+        globalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
+    }
+
+    fun reportPinnedHeight(px: Int) {
+        if (_pinned.value) _pinnedHeightPx.value = px
+    }
+
+    /** Plays a YouTube video inside the island (pinned, so it doesn't close by itself). */
+    fun showVideo(videoId: String) {
+        timer?.cancel()
+        val m = IslandMode.Video(videoId)
+        set(m)
+        _pinned.value = true
+        pinnedMode = m
     }
 
     /** Call on any interaction so the expanded island doesn't close under your finger. */
     fun poke() {
+        if (_pinned.value && _mode.value == pinnedMode) return
         when (_mode.value) {
             is IslandMode.Expanded -> autoCollapse(10_000)
             IslandMode.Flashlight, is IslandMode.Activity -> autoCollapse(6_000)
@@ -156,7 +229,8 @@ class IslandController(private val scope: CoroutineScope) {
         timer?.cancel()
         timer = scope.launch {
             delay(ms)
-            set(IslandMode.Collapsed)
+            // Pinned: go back to the pinned card instead of closing.
+            set(pinnedMode ?: IslandMode.Collapsed)
         }
     }
 

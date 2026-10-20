@@ -91,6 +91,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -122,7 +123,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-private enum class Face { COLLAPSED, EXPANDED, NOTIF, FLASHLIGHT, ALERT, ACTIVITY }
+private enum class Face { COLLAPSED, EXPANDED, NOTIF, FLASHLIGHT, ALERT, ACTIVITY, VIDEO }
 
 private val Dim = Color(0xFFA6A6AE)
 private val Soft = Color(0xE0FFFFFF)
@@ -174,8 +175,10 @@ fun IslandUi(controller: IslandController) {
         IslandMode.Flashlight -> Face.FLASHLIGHT
         is IslandMode.Alert -> Face.ALERT
         is IslandMode.Activity -> Face.ACTIVITY
+        is IslandMode.Video -> Face.VIDEO
         IslandMode.Collapsed -> Face.COLLAPSED
     }
+    val pinned by controller.pinned.collectAsState()
     val collapsed = face == Face.COLLAPSED
     val cardWidth = IslandService.expandedWidthDp(LocalConfiguration.current.screenWidthDp, cfg.expandedMargin).dp
     val pageH = pageHeight(cfg)
@@ -190,7 +193,7 @@ fun IslandUi(controller: IslandController) {
         Face.COLLAPSED -> collapsedWidthDp(cfg, layout.main).dp
         Face.ALERT -> minOf(cardWidth, cfg.width.dp + 170.dp)
         Face.FLASHLIGHT -> minOf(cardWidth, 300.dp)
-        Face.EXPANDED, Face.NOTIF, Face.ACTIVITY -> cardWidth
+        Face.EXPANDED, Face.NOTIF, Face.ACTIVITY, Face.VIDEO -> cardWidth
     }
     val targetH = when (face) {
         Face.COLLAPSED -> pillH
@@ -198,6 +201,13 @@ fun IslandUi(controller: IslandController) {
         Face.FLASHLIGHT -> pillH + 158.dp
         Face.EXPANDED -> pillH + 2.dp + pageH + (if (sessions.isNotEmpty()) 12.dp else 0.dp) + 10.dp
         Face.NOTIF, Face.ACTIVITY -> measured
+        Face.VIDEO -> pillH + 6.dp + (cardWidth - 24.dp) * 9f / 16f + VIDEO_BAR_H
+    }
+    // Pinned: tell the service the card's height so it can cut the window to it.
+    LaunchedEffect(pinned, face, targetH) {
+        if (pinned && (face == Face.EXPANDED || face == Face.VIDEO)) {
+            controller.reportPinnedHeight(with(density) { targetH.roundToPx() })
+        }
     }
     // Opening gets a little bounce; closing settles without overshoot, so it never dips below the pill size.
     val sizeSpec = if (collapsed) spring<Dp>(dampingRatio = 1f, stiffness = 420f)
@@ -235,7 +245,7 @@ fun IslandUi(controller: IslandController) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .then(if (collapsed) Modifier else Modifier.noRippleClick { controller.collapse() }),
+            .then(if (collapsed) Modifier else Modifier.noRippleClick { controller.dismiss() }),
         contentAlignment = Alignment.TopCenter,
     ) {
         if (bubbleScale > 0.01f) {
@@ -317,6 +327,9 @@ fun IslandUi(controller: IslandController) {
                                     Modifier.onSizeChanged { measuredPx = it.height },
                                 )
                             }
+                        }
+                        Face.VIDEO -> (mode as? IslandMode.Video)?.let {
+                            VideoCard(cfg, it.videoId, cardWidth, pinned, controller)
                         }
                         Face.FLASHLIGHT -> FlashlightCard(cfg, minOf(cardWidth, 300.dp), controller)
                         Face.ALERT -> (mode as? IslandMode.Alert)?.let {
@@ -540,6 +553,58 @@ private fun PixelBattery(percent: Int, charging: Boolean) {
 }
 
 private val TorchYellow = Color(0xFFFFD60A)
+
+private val VIDEO_BAR_H = 54.dp
+
+// ------------------------------------------------------------------ video
+
+/**
+ * A YouTube video playing inside the island through YouTube's official embedded player.
+ * Opened by sharing a video to "Play in island"; starts pinned so it stays open.
+ */
+@Composable
+private fun VideoCard(cfg: IslandConfig, videoId: String, width: Dp, pinned: Boolean, controller: IslandController) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier
+            .width(width)
+            .padding(start = 12.dp, end = 12.dp, top = cfg.height.dp + 6.dp),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape((cfg.expandedCorner - 12f).coerceAtLeast(8f).dp))
+                .background(Color(0xFF111114)),
+        ) {
+            key(videoId) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx -> YouTubeWebView.create(ctx, videoId) },
+                    onRelease = { it.destroy() },
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().height(VIDEO_BAR_H),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            GlassButton(R.drawable.ic_pin, 36.dp, strong = pinned) { controller.togglePin() }
+            GlassButton(R.drawable.ic_open, 36.dp) {
+                // Continue in the YouTube app.
+                runCatching {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.youtube.com/watch?v=$videoId"))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+                controller.collapse()
+            }
+            GlassButton(R.drawable.ic_close, 36.dp) { controller.collapse() }
+        }
+    }
+}
 
 // --------------------------------------------------------------- collapsed
 
@@ -1005,6 +1070,8 @@ private fun MediaPage(s: MediaState, controller: IslandController) {
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            val isPinned by controller.pinned.collectAsState()
+            GlassButton(R.drawable.ic_pip, 34.dp) { controller.popOut() }
             GlassButton(R.drawable.ic_prev, 42.dp) {
                 MediaRepository.previous(context, s.packageName); controller.poke()
             }
@@ -1014,6 +1081,7 @@ private fun MediaPage(s: MediaState, controller: IslandController) {
             GlassButton(R.drawable.ic_next, 42.dp) {
                 MediaRepository.next(context, s.packageName); controller.poke()
             }
+            GlassButton(R.drawable.ic_pin, 34.dp, strong = isPinned) { controller.togglePin() }
         }
     }
 }

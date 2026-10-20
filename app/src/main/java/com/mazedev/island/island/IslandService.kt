@@ -80,7 +80,8 @@ class IslandService : AccessibilityService() {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
             setContent { IslandUi(controller) }
         }
-        val displayView = IslandRootView(this) { controller.collapse() }.apply {
+        controller.globalAction = { performGlobalAction(it) }
+        val displayView = IslandRootView(this) { controller.dismiss() }.apply {
             addView(
                 composeView,
                 ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
@@ -110,10 +111,16 @@ class IslandService : AccessibilityService() {
         // Display window: only its touch/focus flags change (never its size while animating).
         scope.launch {
             combine(
-                Prefs.island, collapsedFlow, controller.focusable, previewOpen,
+                combine(Prefs.island, collapsedFlow) { cfg, collapsed -> cfg to collapsed },
+                controller.focusable,
+                previewOpen,
                 combine(controller.windowLarge, IslandPreview.mode) { big, pm -> big || pm != PreviewMode.NONE },
-            ) { cfg, collapsed, focus, pv, large ->
-                DisplayState(cfg, interactive = !collapsed || pv, focusable = focus, large = large)
+                combine(controller.pinned, controller.pinnedHeightPx, controller.mode) { pin, hpx, m ->
+                    // Only while the pinned card itself is showing (not a notification on top).
+                    if (pin && hpx > 0 && (m is IslandMode.Expanded || m is IslandMode.Video)) hpx else 0
+                },
+            ) { (cfg, collapsed), focus, pv, large, pinnedPx ->
+                DisplayState(cfg, interactive = !collapsed || pv, focusable = focus, large = large, pinnedHeightPx = pinnedPx)
             }
                 .distinctUntilChanged()
                 .collect { applyDisplay(it) }
@@ -137,17 +144,19 @@ class IslandService : AccessibilityService() {
                     controller.showActivity(ringing.key, holdMs = 0)
                 } else if (ringing == null && shownRinging != null) {
                     val m = controller.mode.value
-                    if (m is IslandMode.Activity && m.key == shownRinging) controller.collapse()
+                    if (m is IslandMode.Activity && m.key == shownRinging) controller.dismiss()
                     shownRinging = null
                 }
                 val m = controller.mode.value
-                if (m is IslandMode.Activity && list.none { it.key == m.key }) controller.collapse()
+                if (m is IslandMode.Activity && list.none { it.key == m.key }) controller.dismiss()
             }
         }
         scope.launch {
             Prefs.island.collect { cfg -> applyPopupSetting(cfg) }
         }
         scope.launch { MediaRepository.notifications.collect { controller.showNotification(it) } }
+        // "Share to Maze Island" from YouTube → play it in the island.
+        scope.launch { VideoRequests.requests.collect { controller.showVideo(it) } }
 
         // Settings preview: hold the island open while the expanded-card sliders move.
         scope.launch {
@@ -272,6 +281,11 @@ class IslandService : AccessibilityService() {
         val focusable: Boolean,
         /** Only used under the status bar: the window is cut to the pill's height while collapsed. */
         val large: Boolean = true,
+        /**
+         * Pinned: the window is cut to the card's height, so the rest of the screen stays usable
+         * (only the height changes, so the island doesn't move).
+         */
+        val pinnedHeightPx: Int = 0,
     )
 
     private var displayType = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -366,7 +380,9 @@ class IslandService : AccessibilityService() {
         // (which sits inside the status bar, where touches go to the status bar anyway).
         // Only the height changes, never the width, so the island can't jump sideways.
         val under = cfg.underStatusBar(this)
-        val heightPx = if (under && !state.large) {
+        val heightPx = if (state.pinnedHeightPx > 0) {
+            state.pinnedHeightPx + (2 * density).roundToInt()
+        } else if (under && !state.large) {
             (cfg.height * density).roundToInt()
         } else {
             ((cfg.height + EXPANDED_CONTENT_DP) * density).roundToInt()

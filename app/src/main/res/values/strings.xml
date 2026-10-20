@@ -6,4 +6,5 @@
     <string name="widget_description">Your chosen playlist with the current song cover as the background.</string>
     <string name="doorbell_widget_label">Doorbell camera</string>
     <string name="doorbell_widget_description">Latest snapshot from your Google Home doorbell. Tap to open the live view.</string>
+    <string name="share_label">Play in island</string>
 </resources>

@@ -54,6 +54,22 @@
             </intent-filter>
         </activity>
 
+        <!-- "Play in island" in the share menu (YouTube links) -->
+        <activity
+            android:name=".island.ShareToIslandActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/share_label"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
         <!-- Reads media sessions (Spotify etc.) and incoming notifications -->
         <service
             android:name=".media.MediaListenerService"
