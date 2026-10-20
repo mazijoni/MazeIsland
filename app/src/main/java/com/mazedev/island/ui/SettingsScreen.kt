@@ -1,6 +1,8 @@
 package com.mazedev.island.ui
 
 import android.appwidget.AppWidgetManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -58,12 +60,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
+import com.mazedev.island.util.HeadsUp
 import com.mazedev.island.media.MediaRepository
 import com.mazedev.island.util.AppEntry
 import com.mazedev.island.util.Apps
@@ -319,9 +324,30 @@ private fun IslandCard() {
 
     Section("Dynamic Island") {
         ToggleRow("Show island", cfg.enabled) { v -> Prefs.updateIsland { it.copy(enabled = v) } }
+
+        Spacer(Modifier.height(6.dp))
+        Text("Style", fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StyleChip("Always-on bar", cfg.style == IslandStyle.BAR, Modifier.weight(1f)) {
+                Prefs.updateIsland { it.copy(style = IslandStyle.BAR) }
+            }
+            StyleChip("Hidden until needed", cfg.style == IslandStyle.HIDDEN, Modifier.weight(1f)) {
+                Prefs.updateIsland { it.copy(style = IslandStyle.HIDDEN) }
+            }
+        }
+        Text(
+            if (cfg.style == IslandStyle.BAR) "A black pill always sits around the camera."
+            else "Only the camera shows; the island grows out to the sides when something happens.",
+            color = Muted,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
+        )
+
         ToggleRow("Pop up all notifications (not just messages)", cfg.showAllNotifications) { v ->
             Prefs.updateIsland { it.copy(showAllNotifications = v) }
         }
+        PopupReplacementRow(cfg.hideSystemPopups)
 
         Spacer(Modifier.height(8.dp))
         Text("Position & size", fontWeight = FontWeight.Medium)
@@ -336,7 +362,7 @@ private fun IslandCard() {
             Column(Modifier.weight(1f)) {
                 Text("App menu", fontWeight = FontWeight.Medium)
                 Text(
-                    "Tap the island when nothing is playing. ${cfg.menuApps.size} app(s) chosen.",
+                    "Swipe to it from the music tab. ${cfg.menuApps.size} chosen (first 9 shown).",
                     color = Muted,
                     fontSize = 12.sp,
                 )
@@ -353,6 +379,61 @@ private fun IslandCard() {
                 Prefs.updateIsland { it.copy(menuApps = chosen) }
                 picking = false
             },
+        )
+    }
+}
+
+@Composable
+private fun StyleChip(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick, modifier = modifier) { Text(label, fontSize = 13.sp, maxLines = 1) }
+    } else {
+        OutlinedButton(onClick = onClick, modifier = modifier) { Text(label, fontSize = 13.sp, maxLines = 1) }
+    }
+}
+
+@Composable
+private fun PopupReplacementRow(enabled: Boolean) {
+    val context = LocalContext.current
+    var allowed by remember { mutableStateOf(HeadsUp.canControl(context)) }
+    LifecycleResumeEffect(Unit) {
+        allowed = HeadsUp.canControl(context)
+        onPauseOrDispose { }
+    }
+    ToggleRow("Hide the normal notification pop-ups", enabled && allowed) { v ->
+        if (!allowed) return@ToggleRow
+        Prefs.updateIsland { it.copy(hideSystemPopups = v) }
+        if (!v) HeadsUp.setSystemPopups(context, enabled = true)
+    }
+    if (!allowed) {
+        val cmd = HeadsUp.grantCommand(context)
+        Text(
+            "Android only lets a computer grant this. With your phone plugged in (USB debugging on), run once:",
+            color = Muted,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            cmd,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF22222A))
+                .padding(10.dp),
+        )
+        Spacer(Modifier.height(6.dp))
+        OutlinedButton(onClick = {
+            val cm = context.getSystemService(ClipboardManager::class.java)
+            cm.setPrimaryClip(ClipData.newPlainText("adb command", cmd))
+            Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+        }) { Text("Copy command") }
+    } else {
+        Text(
+            "Notifications still go to the shade and lock screen; only the banner is replaced by the island.",
+            color = Muted,
+            fontSize = 12.sp,
         )
     }
 }

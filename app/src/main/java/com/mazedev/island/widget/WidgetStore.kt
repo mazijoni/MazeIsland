@@ -10,8 +10,8 @@ import com.mazedev.island.util.BitmapUtils
 import java.io.File
 
 /**
- * Everything the widget shows, persisted to disk so it survives the app process being killed.
- * (Widgets are drawn from a snapshot, they can't hold live state.)
+ * Everything the widget shows. Kept in memory for instant updates, and mirrored to disk so it
+ * survives the app process being killed. (Widgets are drawn from a snapshot, not live state.)
  */
 object WidgetStore {
     private const val PREFS = "widget"
@@ -20,7 +20,11 @@ object WidgetStore {
     private const val PL_COVER = "playlist_cover.png"
     private const val PL_BG = "playlist_bg.png"
 
-    @Volatile private var lastArt: Bitmap? = null
+    // In-memory copies of the current cover; null = not loaded yet (fall back to disk).
+    @Volatile private var memArt: Bitmap? = null
+    @Volatile private var memBg: Bitmap? = null
+    @Volatile private var memLoaded = false
+    @Volatile private var dirty = false
 
     data class Snapshot(
         val playlistId: String?,
@@ -29,12 +33,9 @@ object WidgetStore {
         val title: String,
         val artist: String,
         val isPlaying: Boolean,
-        val canPlayFromUri: Boolean,
         val art: Bitmap?,
         val background: Bitmap?,
-    ) {
-        val playlistUri: String? get() = playlistId?.let { "spotify:playlist:$it" }
-    }
+    )
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -61,7 +62,8 @@ object WidgetStore {
         }
     }
 
-    fun saveNowPlaying(context: Context, state: MediaState?) {
+    /** Fast path: updates text instantly and keeps the cover in memory. Call [persist] afterwards. */
+    fun setNowPlaying(context: Context, state: MediaState?) {
         val e = prefs(context).edit()
         if (state == null) {
             e.putBoolean("hasNow", false)
@@ -70,28 +72,33 @@ object WidgetStore {
                 .putString("title", state.title)
                 .putString("artist", state.artist)
                 .putBoolean("playing", state.isPlaying)
-                .putBoolean("fromUri", state.canPlayFromUri)
         }
-        e.commit()
+        e.apply() // in-memory immediately, written to disk in the background
 
         val art = state?.art
-        if (art !== lastArt) {
-            lastArt = art
-            if (art != null) {
-                write(context, NOW_ART, art)
-                write(context, NOW_BG, BitmapUtils.blur(art))
-            } else {
-                delete(context, NOW_ART)
-                delete(context, NOW_BG)
-            }
+        if (art !== memArt || !memLoaded) {
+            memArt = art
+            memBg = state?.blurred ?: art?.let { BitmapUtils.blur(it) }
+            memLoaded = true
+            dirty = true
         }
+    }
+
+    /** Slow path: mirror the in-memory cover to disk. */
+    fun persist(context: Context) {
+        if (!dirty) return
+        dirty = false
+        val art = memArt
+        val bg = memBg
+        if (art != null) write(context, NOW_ART, art) else delete(context, NOW_ART)
+        if (bg != null) write(context, NOW_BG, bg) else delete(context, NOW_BG)
     }
 
     fun load(context: Context): Snapshot {
         val p = prefs(context)
         val has = p.getBoolean("hasNow", false)
-        val nowArt = if (has) read(context, NOW_ART) else null
-        val bg = if (nowArt != null) read(context, NOW_BG) else read(context, PL_BG)
+        val nowArt = if (!has) null else if (memLoaded) memArt else read(context, NOW_ART)
+        val nowBg = if (nowArt == null) null else if (memLoaded) memBg else read(context, NOW_BG)
         return Snapshot(
             playlistId = p.getString("playlistId", null),
             playlistName = p.getString("playlistName", null),
@@ -99,9 +106,8 @@ object WidgetStore {
             title = p.getString("title", "") ?: "",
             artist = p.getString("artist", "") ?: "",
             isPlaying = has && p.getBoolean("playing", false),
-            canPlayFromUri = p.getBoolean("fromUri", false),
             art = nowArt ?: read(context, PL_COVER),
-            background = bg,
+            background = nowBg ?: read(context, PL_BG),
         )
     }
 

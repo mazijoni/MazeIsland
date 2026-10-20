@@ -23,7 +23,6 @@ import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
-import androidx.glance.appwidget.updateAll
 import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
@@ -45,7 +44,6 @@ import com.mazedev.island.R
 import com.mazedev.island.media.MediaRepository
 import com.mazedev.island.ui.MainActivity
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 class PlaylistWidgetReceiver : GlanceAppWidgetReceiver() {
@@ -73,9 +71,6 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
 
     // Spotify running → control it directly. Not running → open the playlist in Spotify.
     val playAction: Action = if (s.hasNowPlaying) actionRunCallback<PlayPauseAction>() else openPlaylist
-    val startPlaylist: Action =
-        if (s.hasNowPlaying && s.canPlayFromUri && s.playlistId != null) actionRunCallback<PlayPlaylistAction>()
-        else openPlaylist
 
     val heading = s.playlistName ?: "Tap to pick a playlist"
     val line1 = if (s.hasNowPlaying) s.title else (s.playlistName ?: "No playlist yet")
@@ -102,7 +97,7 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
             )
         }
         // Dark scrim so text stays readable on bright covers
-        Box(modifier = GlanceModifier.fillMaxSize().background(Color(0x66000000))) {}
+        Box(modifier = GlanceModifier.fillMaxSize().background(Color(0x59000000))) {}
 
         Row(
             modifier = GlanceModifier.fillMaxSize().padding(14.dp),
@@ -113,7 +108,7 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
                 modifier = GlanceModifier
                     .size(88.dp)
                     .cornerRadius(16.dp)
-                    .background(Color(0x33FFFFFF))
+                    .background(Color(0x1FFFFFFF))
                     .clickable(openPlaylist),
                 contentAlignment = Alignment.Center,
             ) {
@@ -129,6 +124,7 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
                         provider = ImageProvider(R.drawable.ic_music),
                         contentDescription = null,
                         modifier = GlanceModifier.size(36.dp),
+                        colorFilter = ColorFilter.tint(Dim),
                     )
                 }
             }
@@ -157,46 +153,52 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
                 )
                 Spacer(modifier = GlanceModifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(R.drawable.ic_prev, "Previous", actionRunCallback<PreviousAction>())
-                    Spacer(modifier = GlanceModifier.width(6.dp))
-                    IconButton(
+                    if (s.hasNowPlaying) {
+                        GlassButton(R.drawable.ic_prev, "Previous", actionRunCallback<PreviousAction>())
+                        Spacer(modifier = GlanceModifier.width(8.dp))
+                    }
+                    GlassButton(
                         res = if (s.isPlaying) R.drawable.ic_pause else R.drawable.ic_play,
                         description = if (s.isPlaying) "Pause" else "Play",
                         action = playAction,
-                        size = 40.dp,
-                        filled = true,
+                        size = 38.dp,
+                        strong = true,
                     )
-                    Spacer(modifier = GlanceModifier.width(6.dp))
-                    IconButton(R.drawable.ic_next, "Next", actionRunCallback<NextAction>())
-                    Spacer(modifier = GlanceModifier.width(10.dp))
-                    IconButton(R.drawable.ic_playlist, "Play playlist", startPlaylist)
+                    if (s.hasNowPlaying) {
+                        Spacer(modifier = GlanceModifier.width(8.dp))
+                        GlassButton(R.drawable.ic_next, "Next", actionRunCallback<NextAction>())
+                    }
+                    Spacer(modifier = GlanceModifier.width(12.dp))
+                    // Always opens the chosen playlist in Spotify
+                    GlassButton(R.drawable.ic_playlist, "Open playlist", openPlaylist)
                 }
             }
         }
     }
 }
 
+/** Soft, translucent "glass" button. */
 @Composable
-private fun IconButton(
+private fun GlassButton(
     res: Int,
     description: String,
     action: Action,
-    size: Dp = 34.dp,
-    filled: Boolean = false,
+    size: Dp = 32.dp,
+    strong: Boolean = false,
 ) {
     Box(
         modifier = GlanceModifier
             .size(size)
             .cornerRadius(size / 2)
-            .background(if (filled) Color.White else Color(0x26FFFFFF))
+            .background(if (strong) Color(0x38FFFFFF) else Color(0x1FFFFFFF))
             .clickable(action),
         contentAlignment = Alignment.Center,
     ) {
         Image(
             provider = ImageProvider(res),
             contentDescription = description,
-            modifier = GlanceModifier.size(size * 0.55f),
-            colorFilter = ColorFilter.tint(ColorProvider(if (filled) Color.Black else Color.White)),
+            modifier = GlanceModifier.size(size * 0.5f),
+            colorFilter = ColorFilter.tint(ColorProvider(Color(0xE6FFFFFF))),
         )
     }
 }
@@ -205,28 +207,18 @@ private fun IconButton(
 
 class PlayPauseAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        MediaRepository.playPause(context, spotifyOnly = true)
+        MediaRepository.playPause(context, MediaRepository.SPOTIFY)
     }
 }
 
 class NextAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        MediaRepository.next(context, spotifyOnly = true)
+        MediaRepository.next(context, MediaRepository.SPOTIFY)
     }
 }
 
 class PreviousAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        MediaRepository.previous(context, spotifyOnly = true)
-    }
-}
-
-class PlayPlaylistAction : ActionCallback {
-    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
-        val id = WidgetStore.playlistId(context) ?: return
-        if (MediaRepository.playSpotifyUri(context, "spotify:playlist:$id")) {
-            delay(600)
-            PlaylistWidget().updateAll(context)
-        }
+        MediaRepository.previous(context, MediaRepository.SPOTIFY)
     }
 }

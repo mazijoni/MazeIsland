@@ -6,6 +6,7 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import androidx.compose.ui.platform.ComposeView
@@ -13,14 +14,23 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.mazedev.island.IslandConfig
+import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
 import com.mazedev.island.media.MediaRepository
+import com.mazedev.island.util.HeadsUp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -34,6 +44,15 @@ class IslandService : AccessibilityService() {
     private lateinit var controller: IslandController
     private var wm: WindowManager? = null
     private var root: IslandRootView? = null
+    private var popupsHiddenByUs = false
+    private val miniWide = MutableStateFlow(false)
+
+    private data class WindowState(
+        val cfg: IslandConfig,
+        val large: Boolean,
+        val focusable: Boolean,
+        val miniWide: Boolean,
+    )
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -48,44 +67,102 @@ class IslandService : AccessibilityService() {
             setContent { IslandUi(controller) }
         }
         val rootView = IslandRootView(this) { controller.collapse() }.apply {
-            addView(composeView)
+            addView(
+                composeView,
+                ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
             setViewTreeLifecycleOwner(lifecycleOwner)
             setViewTreeSavedStateRegistryOwner(lifecycleOwner)
         }
-        windowManager.addView(rootView, layoutParams(Prefs.island.value))
+        windowManager.addView(rootView, layoutParams(WindowState(Prefs.island.value, false, false, false)))
         root = rootView
 
-        scope.launch { Prefs.island.collect { applyConfig(it) } }
+        // The collapsed pill is wider while music plays. Grow the window right away, shrink it only
+        // after the shrink animation finished.
+        scope.launch {
+            MediaRepository.media.map { it?.isPlaying == true }.distinctUntilChanged().collectLatest { playing ->
+                if (!playing) delay(IslandController.COLLAPSE_ANIM_MS)
+                miniWide.value = playing
+            }
+        }
+
+        // Window size/flags only change at the start of a grow and the end of a shrink, never per frame.
+        scope.launch {
+            combine(Prefs.island, controller.windowLarge, controller.focusable, miniWide) { cfg, large, focus, wide ->
+                WindowState(cfg, large, focus, wide)
+            }
+                .distinctUntilChanged()
+                .collect { applyWindow(it) }
+        }
+        scope.launch {
+            Prefs.island.collect { cfg -> applyPopupSetting(cfg) }
+        }
         scope.launch { MediaRepository.notifications.collect { controller.showNotification(it) } }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        applyConfig(Prefs.island.value)
+        if (::controller.isInitialized) {
+            applyWindow(
+                WindowState(Prefs.island.value, controller.windowLarge.value, controller.focusable.value, miniWide.value)
+            )
+        }
     }
 
-    private fun applyConfig(cfg: IslandConfig) {
+    private fun applyWindow(state: WindowState) {
         val view = root ?: return
         val portrait = resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE
-        view.visibility = if (cfg.enabled && portrait) View.VISIBLE else View.GONE
-        runCatching { wm?.updateViewLayout(view, layoutParams(cfg)) }
+        view.visibility = if (state.cfg.enabled && portrait) View.VISIBLE else View.GONE
+        runCatching { wm?.updateViewLayout(view, layoutParams(state)) }
     }
 
-    private fun layoutParams(cfg: IslandConfig): WindowManager.LayoutParams {
+    /** Turns the system's own pop-up banners off while the island is on (if allowed). */
+    private fun applyPopupSetting(cfg: IslandConfig) {
+        val hide = cfg.enabled && cfg.hideSystemPopups
+        if (hide) {
+            if (HeadsUp.setSystemPopups(this, enabled = false)) popupsHiddenByUs = true
+        } else if (popupsHiddenByUs) {
+            HeadsUp.setSystemPopups(this, enabled = true)
+            popupsHiddenByUs = false
+        }
+    }
+
+    private fun layoutParams(state: WindowState): WindowManager.LayoutParams {
+        val cfg = state.cfg
+        val large = state.large
+        val focusable = state.focusable
         val density = resources.displayMetrics.density
         val pillHeightPx = (cfg.height * density).roundToInt()
         val (centerOffsetX, topY) = cutoutAnchor(pillHeightPx)
+        val screenWidthDp = resources.configuration.screenWidthDp
 
-        @Suppress("DEPRECATION")
-        val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+        // Fixed sizes: big enough for every state, so Compose animates inside the window freely.
+        val widthPx: Int
+        val heightPx: Int
+        if (large) {
+            widthPx = (expandedWidthDp(screenWidthDp) * density).roundToInt()
+            heightPx = ((cfg.height + EXPANDED_CONTENT_DP) * density).roundToInt()
+        } else {
+            // Exactly the pill's size, so the rest of the status bar stays touchable (shade pull-down).
+            val pillWidthDp = when {
+                state.miniWide -> cfg.width + MINI_EXTRA_DP
+                cfg.style == IslandStyle.HIDDEN -> cfg.height
+                else -> cfg.width
+            }
+            widthPx = (pillWidthDp * density).roundToInt()
+            heightPx = pillHeightPx
+        }
+
+        var flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
             WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        if (!focusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
 
         return WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            widthPx,
+            heightPx,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             flags,
             PixelFormat.TRANSLUCENT,
@@ -93,6 +170,8 @@ class IslandService : AccessibilityService() {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = centerOffsetX + (cfg.offsetX * density).roundToInt()
             y = topY + (cfg.offsetY * density).roundToInt()
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
+                if (focusable) WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE else 0
             if (Build.VERSION.SDK_INT >= 30) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             } else if (Build.VERSION.SDK_INT >= 28) {
@@ -124,10 +203,21 @@ class IslandService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
+        if (popupsHiddenByUs) HeadsUp.setSystemPopups(this, enabled = true)
         root?.let { runCatching { wm?.removeView(it) } }
         root = null
         lifecycleOwner.stop()
         scope.cancel()
         super.onDestroy()
+    }
+
+    companion object {
+        /** Extra width of the collapsed "now playing" pill (cover on the left, bars on the right). */
+        const val MINI_EXTRA_DP = 96f
+
+        /** Room below the camera for the expanded card (pager + dots, or a reply box). */
+        const val EXPANDED_CONTENT_DP = 210f
+
+        fun expandedWidthDp(screenWidthDp: Int): Float = min(screenWidthDp - 16, 400).toFloat()
     }
 }

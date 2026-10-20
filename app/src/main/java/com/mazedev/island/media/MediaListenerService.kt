@@ -7,6 +7,7 @@ import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
@@ -31,16 +32,22 @@ import kotlinx.coroutines.withContext
 /**
  * Granting "Notification access" to this service is what lets us:
  *  - see every active media session (Spotify, YouTube Music, …) with cover art + controls
- *  - see incoming notifications (texts) to pop them up in the island
+ *  - see incoming notifications (texts) to pop them up in the island, and reply to them
  */
 class MediaListenerService : NotificationListenerService() {
+
+    private class Art(val source: Bitmap, val scaled: Bitmap, val blurred: Bitmap, val accent: Int)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var sessionManager: MediaSessionManager? = null
     private val callbacks = LinkedHashMap<MediaController, MediaController.Callback>()
-    private val artCache = HashMap<String, Triple<Bitmap, Bitmap, Int>>()
+    private val artCache = HashMap<String, Art>()
+    private val lastActive = HashMap<String, Long>()
+    private val wasPlaying = HashMap<String, Boolean>()
     private val lastShown = HashMap<String, String>()
+    private val appNames = HashMap<String, String>()
     private var widgetJob: Job? = null
+    private var lastWidgetKey: String? = null
 
     private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
         onSessionsChanged(controllers.orEmpty())
@@ -96,20 +103,26 @@ class MediaListenerService : NotificationListenerService() {
     }
 
     private fun refresh() {
-        val controllers = callbacks.keys.toList()
-        val playing = controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
-        val active = playing ?: controllers.firstOrNull { it.metadata != null }
-        val spotify = controllers.firstOrNull { it.packageName == MediaRepository.SPOTIFY }
-        MediaRepository.publish(
-            active = active,
-            activeState = active?.let { toState(it) },
-            spotify = spotify,
-            spotifyState = spotify?.let { toState(it) },
+        val now = System.currentTimeMillis()
+        val byPackage = LinkedHashMap<String, MediaController>()
+        val states = ArrayList<MediaState>()
+        for (c in callbacks.keys) {
+            if (byPackage.containsKey(c.packageName)) continue // one tab per app
+            val s = toState(c, now) ?: continue
+            byPackage[c.packageName] = c
+            states += s
+        }
+        // Spotify first, then whatever was active most recently.
+        states.sortWith(
+            compareByDescending<MediaState> { it.packageName == MediaRepository.SPOTIFY }
+                .thenByDescending { it.isPlaying }
+                .thenByDescending { it.lastActiveAt }
         )
+        MediaRepository.publish(states, byPackage)
         scheduleWidgetUpdate()
     }
 
-    private fun toState(c: MediaController): MediaState? {
+    private fun toState(c: MediaController, now: Long): MediaState? {
         val md = c.metadata ?: return null
         val title = md.getString(MediaMetadata.METADATA_KEY_TITLE)
             ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
@@ -123,37 +136,50 @@ class MediaListenerService : NotificationListenerService() {
             ?: md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
         val art = artFor(c.packageName, raw)
         val state = c.playbackState
+        val playing = state?.state == PlaybackState.STATE_PLAYING
+        val pkg = c.packageName
+
+        // "Last active" = now while playing, and the moment it got paused once it stops.
+        if (playing || wasPlaying[pkg] == true) lastActive[pkg] = now
+        wasPlaying[pkg] = playing
+
         val actions = state?.actions ?: 0L
         return MediaState(
-            packageName = c.packageName,
+            packageName = pkg,
+            appName = appNames.getOrPut(pkg) { Apps.label(this, pkg) },
             title = title,
             artist = artist,
-            art = art?.first,
-            isPlaying = state?.state == PlaybackState.STATE_PLAYING,
-            accent = art?.second ?: 0xFF1DB954.toInt(),
+            art = art?.scaled,
+            blurred = art?.blurred,
+            isPlaying = playing,
+            accent = art?.accent ?: 0xFF1DB954.toInt(),
             canPlayFromUri = (actions and PlaybackState.ACTION_PLAY_FROM_URI) != 0L,
+            lastActiveAt = lastActive[pkg] ?: 0L,
         )
     }
 
-    /** Scales the cover once per track (not on every playback tick). */
-    private fun artFor(pkg: String, raw: Bitmap?): Pair<Bitmap, Int>? {
+    /** Processes the cover once per track (not on every playback tick). */
+    private fun artFor(pkg: String, raw: Bitmap?): Art? {
         if (raw == null) return null
-        artCache[pkg]?.let { if (it.first === raw) return it.second to it.third }
+        artCache[pkg]?.let { if (it.source === raw) return it }
         return runCatching {
             val scaled = BitmapUtils.scaleToMax(raw, 320)
-            val accent = BitmapUtils.accent(scaled)
-            artCache[pkg] = Triple(raw, scaled, accent)
-            scaled to accent
+            Art(raw, scaled, BitmapUtils.blur(scaled), BitmapUtils.accent(scaled)).also { artCache[pkg] = it }
         }.getOrNull()
     }
 
     private fun scheduleWidgetUpdate() {
         val state = MediaRepository.spotify.value
+        // Skip widget work when nothing the widget shows has changed (e.g. seek / position ticks).
+        val key = state?.let { "${it.title}|${it.artist}|${it.isPlaying}|${System.identityHashCode(it.art)}" }
+        if (key == lastWidgetKey) return
+        lastWidgetKey = key
         widgetJob?.cancel()
         widgetJob = scope.launch {
-            delay(250) // coalesce bursts of callbacks
-            withContext(Dispatchers.IO) { WidgetStore.saveNowPlaying(applicationContext, state) }
+            delay(60) // just enough to merge the title + cover callbacks of one track change
+            WidgetStore.setNowPlaying(applicationContext, state)
             runCatching { PlaylistWidget().updateAll(applicationContext) }
+            withContext(Dispatchers.IO) { WidgetStore.persist(applicationContext) }
         }
     }
 
@@ -176,7 +202,8 @@ class MediaListenerService : NotificationListenerService() {
             extras.containsKey(Notification.EXTRA_MESSAGES)
         if (!isMessage && !Prefs.island.value.showAllNotifications) return
 
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: return
+        val title = (extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)
+            ?: extras.getCharSequence(Notification.EXTRA_TITLE))?.toString() ?: return
         val text = (extras.getCharSequence(Notification.EXTRA_TEXT)
             ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString().orEmpty()
 
@@ -200,8 +227,19 @@ class MediaListenerService : NotificationListenerService() {
                 text = text,
                 icon = icon,
                 contentIntent = n.contentIntent,
+                replyAction = findReplyAction(n),
             )
         )
+    }
+
+    private fun findReplyAction(n: Notification): Notification.Action? {
+        val actions = n.actions ?: return null
+        val canType = { a: Notification.Action -> a.remoteInputs?.any { it.allowFreeFormInput } == true }
+        if (Build.VERSION.SDK_INT >= 28) {
+            actions.firstOrNull { it.semanticAction == Notification.Action.SEMANTIC_ACTION_REPLY && canType(it) }
+                ?.let { return it }
+        }
+        return actions.firstOrNull(canType)
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
