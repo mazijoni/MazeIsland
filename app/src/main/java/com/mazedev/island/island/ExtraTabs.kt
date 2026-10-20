@@ -46,7 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -258,14 +259,22 @@ internal fun CameraPage(active: Boolean, controller: IslandController) {
         onDispose { runCatching { provider?.unbindAll() } }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    // clip = true: the camera image is scaled to fill and would otherwise spill outside the tab.
+    Box(Modifier.fillMaxSize().graphicsLayer { clip = true }) {
         AndroidView(
-            factory = { previewView },
-            modifier = Modifier
+            factory = {
+                previewView.also {
+                    it.outlineProvider = android.view.ViewOutlineProvider.BOUNDS
+                    it.clipToOutline = true
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+        // Fade into the black island on every side (drawn on top of the camera view).
+        Box(
+            Modifier
                 .fillMaxSize()
-                .drawWithContent {
-                    drawContent()
-                    // Fade into the black island on every side.
+                .drawBehind {
                     drawRect(Brush.verticalGradient(0f to Color.Black, 0.22f to Color.Transparent, 0.75f to Color.Transparent, 1f to Color.Black))
                     drawRect(Brush.horizontalGradient(0f to Color.Black, 0.16f to Color.Transparent, 0.84f to Color.Transparent, 1f to Color.Black))
                     drawRect(

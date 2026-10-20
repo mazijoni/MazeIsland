@@ -77,6 +77,7 @@ import com.mazedev.island.IslandPreview
 import com.mazedev.island.IslandStyle
 import com.mazedev.island.PreviewMode
 import com.mazedev.island.Prefs
+import com.mazedev.island.island.LayerStatus
 import com.mazedev.island.util.BtDevices
 import com.mazedev.island.util.ControlKind
 import com.mazedev.island.util.Controls
@@ -862,6 +863,10 @@ private fun RealStatusBarRow(enabled: Boolean) {
             IslandPreview.show(PreviewMode.EXPANDED)
             IslandPreview.release(2_500)
         }
+    }
+    val layer by LayerStatus.text.collectAsState()
+    if (enabled && allowed) {
+        Text(layer, color = if (layer == LayerStatus.UNDER) SpotifyGreen else MaterialTheme.colorScheme.error, fontSize = 12.sp)
     }
     Text(
         if (!allowed) "Needs \"Display over other apps\": tap the switch, allow it, come back and tap it again."

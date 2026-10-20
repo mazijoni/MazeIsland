@@ -324,3 +324,14 @@ fun collapsedWidthDp(cfg: com.mazedev.island.IslandConfig, main: Compact): Float
 }
 
 const val BUBBLE_GAP_DP = 6f
+
+/** Which layer the island is drawn in, shown in Settings so it's clear whether "real status bar" works. */
+object LayerStatus {
+    const val UNDER = "Drawn under the status bar ✓"
+    const val ABOVE = "Drawn above the status bar"
+    private val _text = MutableStateFlow("Island not running")
+    val text: StateFlow<String> = _text.asStateFlow()
+    fun set(value: String) {
+        _text.value = value
+    }
+}

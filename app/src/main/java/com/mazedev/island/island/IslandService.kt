@@ -76,23 +76,9 @@ class IslandService : AccessibilityService() {
         controller = IslandController(scope)
         lifecycleOwner.start()
 
-        val composeView = ComposeView(this).apply {
-            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-            setContent { IslandUi(controller) }
-        }
         controller.globalAction = { performGlobalAction(it) }
-        val displayView = IslandRootView(this) { controller.dismiss() }.apply {
-            addView(
-                composeView,
-                ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
-            )
-            setViewTreeLifecycleOwner(lifecycleOwner)
-            setViewTreeSavedStateRegistryOwner(lifecycleOwner)
-        }
         val firstParams = displayParams(DisplayState(Prefs.island.value, interactive = false, focusable = false, large = false))
-        windowManager.addView(displayView, firstParams)
-        displayType = firstParams.type
-        display = displayView
+        addDisplayWindow(firstParams)
 
         Controls.prepare(this)
         BtDevices.start(this)
@@ -307,17 +293,57 @@ class IslandService : AccessibilityService() {
     private fun visible(cfg: IslandConfig): Boolean =
         cfg.enabled && resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE
 
+    private fun newDisplayView(): IslandRootView {
+        val composeView = ComposeView(this).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+            setContent { IslandUi(controller) }
+        }
+        return IslandRootView(this) { controller.dismiss() }.apply {
+            addView(
+                composeView,
+                ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+            setViewTreeLifecycleOwner(lifecycleOwner)
+            setViewTreeSavedStateRegistryOwner(lifecycleOwner)
+        }
+    }
+
+    /**
+     * Adds the drawing window with a fresh view. If drawing under the status bar isn't allowed,
+     * falls back to the normal (above) layer and reports why in Settings.
+     */
+    private fun addDisplayWindow(params: WindowManager.LayoutParams) {
+        val windowManager = wm ?: return
+        val view = newDisplayView()
+        val result = runCatching { windowManager.addView(view, params) }
+        if (result.isSuccess) {
+            display = view
+            displayType = params.type
+            LayerStatus.set(
+                if (params.type == WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY) LayerStatus.UNDER else LayerStatus.ABOVE
+            )
+        } else {
+            val fallback = WindowManager.LayoutParams().apply { copyFrom(params) }
+            fallback.type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            val view2 = newDisplayView()
+            runCatching { windowManager.addView(view2, fallback) }
+            display = view2
+            displayType = fallback.type
+            LayerStatus.set("Couldn't draw under the status bar: ${result.exceptionOrNull()?.message ?: "unknown error"}")
+        }
+    }
+
     private fun applyDisplay(state: DisplayState) {
         val view = display ?: return
-        view.visibility = if (visible(state.cfg)) View.VISIBLE else View.GONE
         val params = displayParams(state)
         if (params.type != displayType) {
-            // A window's layer can't change in place: re-add it (switching real status bar on/off).
-            runCatching { wm?.removeView(view) }
-            val added = runCatching { wm?.addView(view, params) }.isSuccess
-            displayType = if (added) params.type else displayType
-            if (!added) runCatching { wm?.addView(view, displayParams(state.copy(cfg = state.cfg.copy(realStatusBar = false)))) }
+            // A window's layer can't change in place: replace the window (switching real status bar on/off).
+            runCatching { wm?.removeViewImmediate(view) }
+            display = null
+            addDisplayWindow(params)
+            display?.visibility = if (visible(state.cfg)) View.VISIBLE else View.GONE
         } else {
+            view.visibility = if (visible(state.cfg)) View.VISIBLE else View.GONE
             runCatching { wm?.updateViewLayout(view, params) }
         }
     }
