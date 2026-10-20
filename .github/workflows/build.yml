@@ -34,7 +34,8 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          grep -E "e: |error:|What went wrong|^> |Exception" build.log | grep -v "^> Task" | head -10 | while IFS= read -r line; do echo "::error::$line"; done
+          ls -la
+          { grep -E "e: |error:|What went wrong|Exception" build.log || tail -n 10 build.log; } | head -10 | while IFS= read -r line; do echo "::error::${line:0:900}"; done
 
       # Publishes the APK as the "latest" release, so this link always gets the newest build:
       # https://github.com/mazijoni/MazeIsland/releases/latest/download/MazeIsland.apk
