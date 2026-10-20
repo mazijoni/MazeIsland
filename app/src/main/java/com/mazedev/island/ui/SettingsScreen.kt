@@ -77,6 +77,7 @@ import com.mazedev.island.IslandPreview
 import com.mazedev.island.IslandStyle
 import com.mazedev.island.PreviewMode
 import com.mazedev.island.Prefs
+import com.mazedev.island.util.BtDevices
 import com.mazedev.island.util.ControlKind
 import com.mazedev.island.util.Controls
 import com.mazedev.island.util.HeadsUp
@@ -363,6 +364,11 @@ private fun IslandCard() {
             modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
         )
 
+        ToggleRow("Clock & battery beside the camera when open", cfg.statusInIsland) { v ->
+            Prefs.updateIsland { it.copy(statusInIsland = v) }
+            IslandPreview.show(PreviewMode.EXPANDED)
+            IslandPreview.release(2_500)
+        }
         ToggleRow("Pop up all notifications (not just messages)", cfg.showAllNotifications) { v ->
             Prefs.updateIsland { it.copy(showAllNotifications = v) }
         }
@@ -653,6 +659,9 @@ private fun ControlsCard() {
         onPauseOrDispose { }
     }
     val chosen = cfg.controls.mapNotNull { runCatching { ControlKind.valueOf(it) }.getOrNull() }
+    val btLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) BtDevices.start(context)
+    }
 
     Section("Island quick controls") {
         Text(
@@ -669,6 +678,10 @@ private fun ControlsCard() {
                     .clickable {
                         val next = if (on) chosen - kind else chosen + kind
                         Prefs.updateIsland { it.copy(controls = next.map { k -> k.name }) }
+                        if (!on && kind.needsBluetooth) {
+                            if (BtDevices.hasPermission(context)) BtDevices.start(context)
+                            else if (Build.VERSION.SDK_INT >= 31) btLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                        }
                         flashAppsPreview()
                     }
                     .padding(vertical = 4.dp),
@@ -782,6 +795,7 @@ private fun LiveCard() {
     val cfg by Prefs.island.collectAsState()
     val btLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         Prefs.updateIsland { it.copy(alertBluetooth = granted) }
+        if (granted) BtDevices.start(context)
     }
     Section("Live activities & alerts") {
         ToggleRow("Live activities (timers, calls, navigation)", cfg.liveActivities) { v ->

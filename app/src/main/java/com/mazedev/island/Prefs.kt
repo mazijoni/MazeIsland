@@ -56,6 +56,8 @@ data class IslandConfig(
     val alertDnd: Boolean = true,
     val alertUnlock: Boolean = false,
     val alertBluetooth: Boolean = true,
+    /** Draw a clock + battery beside the camera while the island is open (it covers the real ones). */
+    val statusInIsland: Boolean = true,
     val menuApps: List<String> = listOf("com.spotify.music"),
 )
 
@@ -96,6 +98,7 @@ object Prefs {
             alertDnd = sp.getBoolean("alertDnd", d.alertDnd),
             alertUnlock = sp.getBoolean("alertUnlock", d.alertUnlock),
             alertBluetooth = sp.getBoolean("alertBluetooth", d.alertBluetooth),
+            statusInIsland = sp.getBoolean("statusInIsland", d.statusInIsland),
             menuApps = sp.getString("menuApps", null)
                 ?.split(",")
                 ?.filter { it.isNotBlank() }
@@ -135,6 +138,7 @@ object Prefs {
             .putBoolean("alertDnd", c.alertDnd)
             .putBoolean("alertUnlock", c.alertUnlock)
             .putBoolean("alertBluetooth", c.alertBluetooth)
+            .putBoolean("statusInIsland", c.statusInIsland)
             .putString("menuApps", c.menuApps.joinToString(","))
             .apply()
     }

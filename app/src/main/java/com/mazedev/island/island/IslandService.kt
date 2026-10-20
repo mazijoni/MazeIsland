@@ -22,6 +22,7 @@ import com.mazedev.island.PreviewMode
 import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
 import com.mazedev.island.media.MediaRepository
+import com.mazedev.island.util.BtDevices
 import com.mazedev.island.util.Controls
 import com.mazedev.island.util.HeadsUp
 import com.mazedev.island.util.Shortcut
@@ -90,6 +91,7 @@ class IslandService : AccessibilityService() {
         display = displayView
 
         Controls.prepare(this)
+        BtDevices.start(this)
         val tapView = View(this)
         val detector = GestureDetector(this, IslandGestures(tapView))
         @Suppress("ClickableViewAccessibility")

@@ -101,6 +101,7 @@ import com.mazedev.island.media.formatDuration
 import com.mazedev.island.ui.MainActivity
 import com.mazedev.island.util.AppEntry
 import com.mazedev.island.util.Apps
+import com.mazedev.island.util.BtDevices
 import com.mazedev.island.util.ControlKind
 import com.mazedev.island.util.Controls
 import com.mazedev.island.util.sendCompat
@@ -125,7 +126,10 @@ private class AppTab(cfg: IslandConfig) {
     val rows = (items + cols - 1) / cols
     private val tileH = cfg.appIconSize + (if (cfg.appLabels) 19f else 0f)
     val height: Dp = run {
-        val sliderH = sliders.size * SLIDER_H + (if (sliders.isNotEmpty() && rows > 0) 6f else 0f)
+        // Battery + Bluetooth share one row.
+        val sliderRows = sliders.count { it == ControlKind.BRIGHTNESS || it == ControlKind.VOLUME } +
+            (if (sliders.any { it == ControlKind.BATTERY || it == ControlKind.BLUETOOTH }) 1 else 0)
+        val sliderH = sliderRows * SLIDER_H + (if (sliderRows > 0 && rows > 0) 6f else 0f)
         val grid = if (rows > 0) rows * tileH + (rows - 1) * 10f else 0f
         maxOf(MEDIA_PAGE_H, sliderH + grid + 14f).dp
     }
@@ -318,8 +322,91 @@ fun IslandUi(controller: IslandController) {
                     }
                 }
             }
+            // The open island covers the real clock and battery, so draw them beside the camera.
+            val showStatus = cfg.statusInIsland &&
+                (face == Face.EXPANDED || face == Face.NOTIF || face == Face.ACTIVITY)
+            val statusAlpha by animateFloatAsState(if (showStatus) 1f else 0f, tween(200), label = "status")
+            if (statusAlpha > 0.01f) {
+                StatusRow(cfg, Modifier.graphicsLayer { alpha = statusAlpha })
+            }
         }
     }
+}
+
+/** Clock on the left of the camera, battery (and headphone battery) on the right. */
+@Composable
+private fun StatusRow(cfg: IslandConfig, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val now = rememberWallClock()
+    val time = remember(now / 30_000) { android.text.format.DateFormat.getTimeFormat(context).format(java.util.Date(now)) }
+    val battery by produceState(Controls.battery(context)) {
+        while (true) {
+            value = Controls.battery(context)
+            delay(20_000)
+        }
+    }
+    val devices by BtDevices.devices.collectAsState()
+    val buds = devices.firstOrNull { it.battery >= 0 }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(cfg.height.dp)
+            .padding(horizontal = 22.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(time, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.weight(1f))
+        if (buds != null) {
+            Image(
+                painter = painterResource(R.drawable.ic_headphones),
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+                colorFilter = ColorFilter.tint(Soft),
+            )
+            Text(" ${buds.battery}%", color = Soft, fontSize = 12.sp)
+            Spacer(Modifier.width(8.dp))
+        }
+        Text("${battery.percent}%", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.width(4.dp))
+        BatteryGlyph(battery.percent, battery.charging)
+    }
+}
+
+/** Small horizontal battery icon, filled to the level (green while charging, red when low). */
+@Composable
+private fun BatteryGlyph(percent: Int, charging: Boolean) {
+    val fill = when {
+        charging -> Color(0xFF34C759)
+        percent <= 20 -> Color(0xFFFF453A)
+        else -> Color.White
+    }
+    Box(
+        Modifier
+            .size(width = 24.dp, height = 12.dp)
+            .drawBehind {
+                val bodyW = size.width - 2.dp.toPx()
+                val r = 3.dp.toPx()
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.4f),
+                    size = Size(bodyW, size.height),
+                    cornerRadius = CornerRadius(r, r),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()),
+                )
+                val inset = 2.dp.toPx()
+                drawRoundRect(
+                    color = fill,
+                    topLeft = Offset(inset, inset),
+                    size = Size((bodyW - inset * 2) * (percent / 100f), size.height - inset * 2),
+                    cornerRadius = CornerRadius(r / 2, r / 2),
+                )
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.4f),
+                    topLeft = Offset(bodyW + 0.5.dp.toPx(), size.height * 0.33f),
+                    size = Size(1.5.dp.toPx(), size.height * 0.34f),
+                    cornerRadius = CornerRadius(1f, 1f),
+                )
+            }
+    )
 }
 
 private val TorchYellow = Color(0xFFFFD60A)
@@ -862,8 +949,7 @@ private fun AppsPage(cfg: IslandConfig, controller: IslandController) {
                 }
             }
             ControlKind.INTERNET -> MenuTile(kind.label, res = kind.icon) { open(Controls.internetPanel()) }
-            ControlKind.BLUETOOTH -> MenuTile(kind.label, res = kind.icon) { open(Controls.bluetoothSettings()) }
-            ControlKind.BRIGHTNESS, ControlKind.VOLUME -> MenuTile(kind.label, res = kind.icon) {}
+            ControlKind.BRIGHTNESS, ControlKind.VOLUME, ControlKind.BLUETOOTH -> MenuTile(kind.label, res = kind.icon) {}
         }
     }
     val appTiles = apps.map { app ->
@@ -915,10 +1001,130 @@ private fun AppsPage(cfg: IslandConfig, controller: IslandController) {
                 else -> Unit
             }
         }
+        val showBattery = ControlKind.BATTERY in tab.sliders
+        val showBt = ControlKind.BLUETOOTH in tab.sliders
+        if (showBattery || showBt) {
+            DeviceRow(showBattery, showBt) { open(Controls.bluetoothSettings()) }
+        }
         tiles.chunked(tab.cols).forEach { row ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 row.forEach { AppTile(it, iconSize, tileWidth, cfg.appLabels, filter) }
                 repeat(tab.cols - row.size) { Spacer(Modifier.width(tileWidth)) }
+            }
+        }
+    }
+}
+
+/**
+ * Headphone battery as a filled bar (phone battery when no headphones report one), and/or the
+ * connected Bluetooth device. With both on they split the row in half.
+ */
+@Composable
+private fun DeviceRow(showBattery: Boolean, showBt: Boolean, onOpenBluetooth: () -> Unit) {
+    val context = LocalContext.current
+    val devices by BtDevices.devices.collectAsState()
+    val btOn by BtDevices.enabled.collectAsState()
+    val permitted = remember { BtDevices.hasPermission(context) }
+    val phone by produceState(Controls.battery(context)) {
+        while (true) {
+            value = Controls.battery(context)
+            delay(15_000)
+        }
+    }
+    val withBattery = devices.firstOrNull { it.battery >= 0 }
+    val main = withBattery ?: devices.firstOrNull()
+
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (showBattery) {
+            val (icon, pct, label) = if (withBattery != null) {
+                Triple(R.drawable.ic_headphones, withBattery.battery, if (showBt) "" else withBattery.name)
+            } else {
+                Triple(if (phone.charging) R.drawable.ic_charging else R.drawable.ic_battery, phone.percent, if (showBt) "" else "Phone")
+            }
+            InfoBar(
+                icon = icon,
+                fill = pct / 100f,
+                title = label,
+                trailing = "$pct%",
+                fillColor = if (pct <= 20) Color(0xFFFF453A).copy(alpha = 0.55f) else Color.White.copy(alpha = 0.26f),
+                modifier = Modifier.weight(1f),
+                onClick = onOpenBluetooth,
+            )
+        }
+        if (showBt) {
+            val (title, sub) = when {
+                !permitted -> "Bluetooth" to "Allow in Maze Island settings"
+                !btOn -> "Bluetooth" to "Off"
+                main != null -> main.name to buildString {
+                    append(main.profiles.joinToString(" + ").ifBlank { "Connected" })
+                    if (devices.size > 1) append(" · +${devices.size - 1} more")
+                }
+                else -> "Bluetooth" to "Not connected"
+            }
+            InfoBar(
+                icon = R.drawable.ic_bluetooth,
+                fill = if (main != null) 1f else 0f,
+                title = title,
+                subtitle = sub,
+                trailing = if (!showBattery && main != null && main.battery >= 0) "${main.battery}%" else "",
+                fillColor = Color(0xFF64A8FF).copy(alpha = 0.22f),
+                modifier = Modifier.weight(1f),
+                onClick = onOpenBluetooth,
+            )
+        }
+    }
+}
+
+/** Read-only bar in the same style as the sliders. */
+@Composable
+private fun InfoBar(
+    @DrawableRes icon: Int,
+    fill: Float,
+    title: String,
+    modifier: Modifier = Modifier,
+    subtitle: String = "",
+    trailing: String = "",
+    fillColor: Color = Color.White.copy(alpha = 0.26f),
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(20.dp)
+    Box(
+        modifier = modifier
+            .height((AppTab.SLIDER_H - 8f).dp)
+            .glass(shape)
+            .noRippleClick(onClick),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        if (fill > 0f) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fill.coerceIn(0.06f, 1f))
+                    .clip(shape)
+                    .background(fillColor)
+            )
+        }
+        Row(
+            Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Image(
+                painter = painterResource(icon),
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                colorFilter = ColorFilter.tint(Soft),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                if (title.isNotBlank()) {
+                    Text(title, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (subtitle.isNotBlank()) {
+                    Text(subtitle, color = Dim, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (trailing.isNotBlank()) {
+                Text(trailing, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             }
         }
     }

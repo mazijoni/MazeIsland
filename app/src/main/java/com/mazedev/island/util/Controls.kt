@@ -29,14 +29,15 @@ enum class ControlKind(val label: String, @DrawableRes val icon: Int, val isSlid
     DND("Do Not Disturb", R.drawable.ic_dnd),
     RINGER("Sound / vibrate", R.drawable.ic_bell),
     AUTO_ROTATE("Auto-rotate", R.drawable.ic_rotate),
-    BATTERY("Battery", R.drawable.ic_battery),
+    BATTERY("Battery (headphones, or phone)", R.drawable.ic_battery, isSlider = true),
     INTERNET("Internet", R.drawable.ic_wifi),
-    BLUETOOTH("Bluetooth", R.drawable.ic_bluetooth),
+    BLUETOOTH("Bluetooth device", R.drawable.ic_bluetooth, isSlider = true),
     ;
 
     /** Extra permission this control needs, if any. */
     val needsWriteSettings: Boolean get() = this == BRIGHTNESS || this == AUTO_ROTATE
     val needsPolicyAccess: Boolean get() = this == DND
+    val needsBluetooth: Boolean get() = this == BATTERY || this == BLUETOOTH
 }
 
 object Controls {
