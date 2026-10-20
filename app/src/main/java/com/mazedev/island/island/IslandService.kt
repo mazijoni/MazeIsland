@@ -438,9 +438,14 @@ class IslandService : AccessibilityService() {
         val type = if (under) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
         var flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
-        if (!interactive) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        // Android caps "display over other apps" windows that can't be touched at 80% opacity
+        // (anti-tapjacking), which turned the black island gray. Under the status bar the window
+        // stays touchable instead: while collapsed it's only pill-high and sits inside the status
+        // bar, which is on top and takes those touches anyway.
+        if (!interactive && !under) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         if (!focusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
         return baseParams(widthPx, heightPx, cfg, flags, type).apply {
+            alpha = 1f
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
                 if (focusable) WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE else 0
         }
