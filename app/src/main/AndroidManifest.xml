@@ -4,6 +4,8 @@
 
     <!-- Fetches playlist name + cover from Spotify's public oEmbed endpoint -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Optional: draw the island under the real status bar -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Wi-Fi / mobile signal icons in the island's status row -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />

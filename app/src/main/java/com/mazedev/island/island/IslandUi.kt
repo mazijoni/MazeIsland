@@ -105,6 +105,7 @@ import com.mazedev.island.IslandPreview
 import com.mazedev.island.PreviewMode
 import com.mazedev.island.IslandStyle
 import com.mazedev.island.Prefs
+import com.mazedev.island.underStatusBar
 import com.mazedev.island.R
 import com.mazedev.island.media.MediaRepository
 import com.mazedev.island.media.LiveActivity
@@ -335,7 +336,9 @@ fun IslandUi(controller: IslandController) {
                 }
             }
             // The open island covers the real clock and battery, so draw them beside the camera.
-            val showStatus = cfg.statusInIsland &&
+            val ctx = LocalContext.current
+            val realStatus = remember(cfg) { cfg.underStatusBar(ctx) }
+            val showStatus = cfg.statusInIsland && !realStatus &&
                 (face == Face.EXPANDED || face == Face.NOTIF || face == Face.ACTIVITY)
             val statusAlpha by animateFloatAsState(if (showStatus) 1f else 0f, tween(200), label = "status")
             if (statusAlpha > 0.01f) {

@@ -364,12 +364,13 @@ private fun IslandCard() {
             modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
         )
 
-        ToggleRow("Clock & battery beside the camera when open", cfg.statusInIsland) { v ->
+        RealStatusBarRow(cfg.realStatusBar)
+        if (!cfg.realStatusBar) ToggleRow("Clock & battery beside the camera when open", cfg.statusInIsland) { v ->
             Prefs.updateIsland { it.copy(statusInIsland = v) }
             IslandPreview.show(PreviewMode.EXPANDED)
             IslandPreview.release(2_500)
         }
-        if (cfg.statusInIsland) {
+        if (cfg.statusInIsland && !cfg.realStatusBar) {
             LabeledSlider("Clock & battery up / down", cfg.statusOffsetY, -10f..12f, PreviewMode.EXPANDED) { v ->
                 Prefs.updateIsland { it.copy(statusOffsetY = v) }
             }
@@ -835,4 +836,32 @@ private fun LiveCard() {
             fontSize = 11.sp,
         )
     }
+}
+
+@Composable
+private fun RealStatusBarRow(enabled: Boolean) {
+    val context = LocalContext.current
+    var allowed by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+    LifecycleResumeEffect(Unit) {
+        allowed = Settings.canDrawOverlays(context)
+        onPauseOrDispose { }
+    }
+    ToggleRow("Show the real status bar on top of the island", enabled && allowed) { v ->
+        if (v && !allowed) {
+            context.startActivity(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+            )
+        } else {
+            Prefs.updateIsland { it.copy(realStatusBar = v) }
+            IslandPreview.show(PreviewMode.EXPANDED)
+            IslandPreview.release(2_500)
+        }
+    }
+    Text(
+        if (!allowed) "Needs \"Display over other apps\": tap the switch, allow it, come back and tap it again."
+        else "Android's own clock, signal and battery show over the island. In apps with a light top bar " +
+            "Android makes those icons dark, so they're hard to see on the black island there.",
+        color = Muted,
+        fontSize = 12.sp,
+    )
 }

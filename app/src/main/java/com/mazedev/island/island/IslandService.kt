@@ -87,7 +87,9 @@ class IslandService : AccessibilityService() {
             setViewTreeLifecycleOwner(lifecycleOwner)
             setViewTreeSavedStateRegistryOwner(lifecycleOwner)
         }
-        windowManager.addView(displayView, displayParams(Prefs.island.value, interactive = false, focusable = false))
+        val firstParams = displayParams(DisplayState(Prefs.island.value, interactive = false, focusable = false, large = false))
+        windowManager.addView(displayView, firstParams)
+        displayType = firstParams.type
         display = displayView
 
         Controls.prepare(this)
@@ -106,8 +108,11 @@ class IslandService : AccessibilityService() {
 
         // Display window: only its touch/focus flags change (never its size while animating).
         scope.launch {
-            combine(Prefs.island, collapsedFlow, controller.focusable, previewOpen) { cfg, collapsed, focus, pv ->
-                DisplayState(cfg, interactive = !collapsed || pv, focusable = focus)
+            combine(
+                Prefs.island, collapsedFlow, controller.focusable, previewOpen,
+                combine(controller.windowLarge, IslandPreview.mode) { big, pm -> big || pm != PreviewMode.NONE },
+            ) { cfg, collapsed, focus, pv, large ->
+                DisplayState(cfg, interactive = !collapsed || pv, focusable = focus, large = large)
             }
                 .distinctUntilChanged()
                 .collect { applyDisplay(it) }
@@ -260,14 +265,27 @@ class IslandService : AccessibilityService() {
         }
     }
 
-    private data class DisplayState(val cfg: IslandConfig, val interactive: Boolean, val focusable: Boolean)
+    private data class DisplayState(
+        val cfg: IslandConfig,
+        val interactive: Boolean,
+        val focusable: Boolean,
+        /** Only used under the status bar: the window is cut to the pill's height while collapsed. */
+        val large: Boolean = true,
+    )
+
+    private var displayType = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         if (!::controller.isInitialized) return
         val cfg = Prefs.island.value
         val collapsed = controller.mode.value == IslandMode.Collapsed
-        applyDisplay(DisplayState(cfg, !collapsed, controller.focusable.value))
+        applyDisplay(
+            DisplayState(
+                cfg, !collapsed, controller.focusable.value,
+                controller.windowLarge.value || IslandPreview.mode.value != PreviewMode.NONE,
+            )
+        )
         applyTouch(cfg, collapsed, currentLayout())
     }
 
@@ -277,7 +295,16 @@ class IslandService : AccessibilityService() {
     private fun applyDisplay(state: DisplayState) {
         val view = display ?: return
         view.visibility = if (visible(state.cfg)) View.VISIBLE else View.GONE
-        runCatching { wm?.updateViewLayout(view, displayParams(state.cfg, state.interactive, state.focusable)) }
+        val params = displayParams(state)
+        if (params.type != displayType) {
+            // A window's layer can't change in place: re-add it (switching real status bar on/off).
+            runCatching { wm?.removeView(view) }
+            val added = runCatching { wm?.addView(view, params) }.isSuccess
+            displayType = if (added) params.type else displayType
+            if (!added) runCatching { wm?.addView(view, displayParams(state.copy(cfg = state.cfg.copy(realStatusBar = false)))) }
+        } else {
+            runCatching { wm?.updateViewLayout(view, params) }
+        }
     }
 
     private fun applyTouch(cfg: IslandConfig, collapsed: Boolean, layout: CollapsedLayout) {
@@ -297,13 +324,19 @@ class IslandService : AccessibilityService() {
         }
     }
 
-    private fun baseParams(widthPx: Int, heightPx: Int, cfg: IslandConfig, flags: Int): WindowManager.LayoutParams {
+    private fun baseParams(
+        widthPx: Int,
+        heightPx: Int,
+        cfg: IslandConfig,
+        flags: Int,
+        type: Int = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+    ): WindowManager.LayoutParams {
         val density = resources.displayMetrics.density
         val (centerOffsetX, topY) = cutoutAnchor((cfg.height * density).roundToInt())
         return WindowManager.LayoutParams(
             widthPx,
             heightPx,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            type,
             flags or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
@@ -321,14 +354,28 @@ class IslandService : AccessibilityService() {
         }
     }
 
-    private fun displayParams(cfg: IslandConfig, interactive: Boolean, focusable: Boolean): WindowManager.LayoutParams {
+    private fun displayParams(state: DisplayState): WindowManager.LayoutParams {
+        val cfg = state.cfg
+        val interactive = state.interactive
+        val focusable = state.focusable
         val density = resources.displayMetrics.density
         val widthPx = resources.displayMetrics.widthPixels
-        val heightPx = ((cfg.height + EXPANDED_CONTENT_DP) * density).roundToInt()
+        // Under the status bar we're an ordinary app overlay. Android blocks touches that pass
+        // through such a window to other apps, so while collapsed it's cut to the pill's height
+        // (which sits inside the status bar, where touches go to the status bar anyway).
+        // Only the height changes, never the width, so the island can't jump sideways.
+        val under = cfg.underStatusBar(this)
+        val heightPx = if (under && !state.large) {
+            (cfg.height * density).roundToInt()
+        } else {
+            ((cfg.height + EXPANDED_CONTENT_DP) * density).roundToInt()
+        }
+        val type = if (under) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
         var flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
         if (!interactive) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         if (!focusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        return baseParams(widthPx, heightPx, cfg, flags).apply {
+        return baseParams(widthPx, heightPx, cfg, flags, type).apply {
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
                 if (focusable) WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE else 0
         }

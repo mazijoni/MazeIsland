@@ -19,6 +19,10 @@ enum class IslandStyle {
 }
 
 /** Island settings. Sizes and offsets are in dp. */
+/** True when the island is drawn under the real status bar (setting on + permission granted). */
+fun IslandConfig.underStatusBar(context: Context): Boolean =
+    realStatusBar && android.provider.Settings.canDrawOverlays(context)
+
 data class IslandConfig(
     val enabled: Boolean = true,
     val style: IslandStyle = IslandStyle.BAR,
@@ -60,6 +64,8 @@ data class IslandConfig(
     val statusInIsland: Boolean = true,
     /** Nudges that clock/battery row up or down (dp), to line up with the real status bar. */
     val statusOffsetY: Float = 2f,
+    /** Draw the island underneath Android's status bar so the real clock/battery show on top. */
+    val realStatusBar: Boolean = false,
     val menuApps: List<String> = listOf("com.spotify.music"),
 )
 
@@ -102,6 +108,7 @@ object Prefs {
             alertBluetooth = sp.getBoolean("alertBluetooth", d.alertBluetooth),
             statusInIsland = sp.getBoolean("statusInIsland", d.statusInIsland),
             statusOffsetY = sp.getFloat("statusOffsetY", d.statusOffsetY),
+            realStatusBar = sp.getBoolean("realStatusBar", d.realStatusBar),
             menuApps = sp.getString("menuApps", null)
                 ?.split(",")
                 ?.filter { it.isNotBlank() }
@@ -143,6 +150,7 @@ object Prefs {
             .putBoolean("alertBluetooth", c.alertBluetooth)
             .putBoolean("statusInIsland", c.statusInIsland)
             .putFloat("statusOffsetY", c.statusOffsetY)
+            .putBoolean("realStatusBar", c.realStatusBar)
             .putString("menuApps", c.menuApps.joinToString(","))
             .apply()
     }
