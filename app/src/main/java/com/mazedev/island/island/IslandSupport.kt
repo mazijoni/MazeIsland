@@ -317,10 +317,19 @@ data class CollapsedLayout(val main: Compact, val bubble: Compact) {
 }
 
 /** Width of the collapsed main pill in dp. */
-fun collapsedWidthDp(cfg: com.mazedev.island.IslandConfig, main: Compact): Float = when (main) {
-    Compact.NONE -> if (cfg.style == com.mazedev.island.IslandStyle.HIDDEN) cfg.height else cfg.width
-    Compact.MEDIA, Compact.ACTIVITY -> cfg.width + IslandService.MINI_EXTRA_DP
-    Compact.TORCH -> cfg.width + 56f
+fun collapsedWidthDp(cfg: com.mazedev.island.IslandConfig, main: Compact): Float {
+    // A corner camera sits inside one end of the pill, so content needs that much extra room.
+    val camera = if (cfg.cameraPosition == "CENTER") 0f else cfg.height
+    return when (main) {
+        Compact.NONE -> if (cfg.style == com.mazedev.island.IslandStyle.HIDDEN) cfg.height else cfg.width
+        Compact.MEDIA, Compact.ACTIVITY -> cfg.width + IslandService.MINI_EXTRA_DP + camera
+        Compact.TORCH -> cfg.width + 56f + camera
+    }
+}
+
+/** Where the front camera is on screen (dp from the left), measured by the service. */
+object IslandGeometry {
+    val cameraXDp = MutableStateFlow(-1f)
 }
 
 const val BUBBLE_GAP_DP = 6f

@@ -72,6 +72,10 @@ data class IslandConfig(
     val tabCamera: Boolean = false,
     /** Weather for this city instead of the phone's location (blank = use location). */
     val weatherCity: String = "",
+    /** Everything except music and charging in white/gray instead of colors. */
+    val monochrome: Boolean = false,
+    /** Where the front camera is: CENTER, LEFT or RIGHT. */
+    val cameraPosition: String = "CENTER",
     val menuApps: List<String> = listOf("com.spotify.music"),
 )
 
@@ -119,6 +123,8 @@ object Prefs {
             tabContacts = sp.getBoolean("tabContacts", d.tabContacts),
             tabCamera = sp.getBoolean("tabCamera", d.tabCamera),
             weatherCity = sp.getString("weatherCity", d.weatherCity) ?: "",
+            monochrome = sp.getBoolean("monochrome", d.monochrome),
+            cameraPosition = sp.getString("cameraPosition", d.cameraPosition) ?: d.cameraPosition,
             menuApps = sp.getString("menuApps", null)
                 ?.split(",")
                 ?.filter { it.isNotBlank() }
@@ -165,6 +171,8 @@ object Prefs {
             .putBoolean("tabContacts", c.tabContacts)
             .putBoolean("tabCamera", c.tabCamera)
             .putString("weatherCity", c.weatherCity)
+            .putBoolean("monochrome", c.monochrome)
+            .putString("cameraPosition", c.cameraPosition)
             .putString("menuApps", c.menuApps.joinToString(","))
             .apply()
     }

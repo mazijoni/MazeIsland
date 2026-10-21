@@ -350,6 +350,18 @@ private fun IslandCard() {
         ToggleRow("Show island", cfg.enabled) { v -> Prefs.updateIsland { it.copy(enabled = v) } }
 
         Spacer(Modifier.height(6.dp))
+        Text("Camera position", fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("LEFT" to "Left corner", "CENTER" to "Middle", "RIGHT" to "Right corner").forEach { (key, label) ->
+                StyleChip(label, cfg.cameraPosition == key, Modifier.weight(1f)) {
+                    Prefs.updateIsland { it.copy(cameraPosition = key) }
+                    IslandPreview.show(PreviewMode.GLOW)
+                    IslandPreview.release(2_000)
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
         Text("Style", fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -373,6 +385,9 @@ private fun IslandCard() {
             Prefs.updateIsland { it.copy(statusInIsland = v) }
             IslandPreview.show(PreviewMode.EXPANDED)
             IslandPreview.release(2_500)
+        }
+        ToggleRow("Monochrome (white instead of colors, except music & charging)", cfg.monochrome) { v ->
+            Prefs.updateIsland { it.copy(monochrome = v) }
         }
         ToggleRow("Pop up all notifications (not just messages)", cfg.showAllNotifications) { v ->
             Prefs.updateIsland { it.copy(showAllNotifications = v) }

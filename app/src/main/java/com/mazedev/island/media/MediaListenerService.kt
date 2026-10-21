@@ -22,6 +22,7 @@ import com.mazedev.island.util.BitmapUtils
 import com.mazedev.island.widget.DoorbellStore
 import com.mazedev.island.widget.DoorbellWidget
 import com.mazedev.island.widget.PlaylistWidget
+import com.mazedev.island.widget.WidgetPusher
 import com.mazedev.island.widget.WidgetStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -237,7 +238,7 @@ class MediaListenerService : NotificationListenerService() {
         widgetJob = scope.launch {
             delay(60) // just enough to merge the title + cover callbacks of one track change
             WidgetStore.setNowPlaying(applicationContext, state)
-            runCatching { PlaylistWidget().updateAll(applicationContext) }
+            runCatching { WidgetPusher.push(applicationContext) }
             withContext(Dispatchers.IO) { WidgetStore.persist(applicationContext) }
         }
     }
@@ -367,23 +368,52 @@ class MediaListenerService : NotificationListenerService() {
     private fun liveActivityFrom(sbn: StatusBarNotification, n: Notification): LiveActivity? {
         val extras = n.extras
         val category = n.category
-        val chrono = extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
+        val pkg = sbn.packageName
+        var chrono = extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
+        var countDown = extras.getBoolean(Notification.EXTRA_CHRONOMETER_COUNT_DOWN)
+        var chronoBase = if (chrono) n.`when` else 0L
         val isCall = category == Notification.CATEGORY_CALL
+        val isClock = pkg in CLOCK_APPS
+        val title0 = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        val text0 = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+        val isGemini = pkg in GEMINI_APPS && sbn.isOngoing &&
+            (isCall || "live" in title0.lowercase() || "live" in text0.lowercase())
+
+        // The Clock app draws its timer in a custom layout, so the countdown isn't in the normal
+        // fields. Render the notification's own view and read the timer from it.
+        var pausedText: String? = null
+        if (isClock && !chrono) {
+            readChronometer(n)?.let { c ->
+                chrono = true
+                countDown = c.countDown
+                chronoBase = c.wallBase
+                if (c.paused) pausedText = c.text
+            }
+        }
+
         val kind = when {
+            isGemini -> LiveActivity.Kind.GEMINI
             isCall -> LiveActivity.Kind.CALL
             category == Notification.CATEGORY_NAVIGATION -> LiveActivity.Kind.NAVIGATION
             category == Notification.CATEGORY_STOPWATCH || chrono -> LiveActivity.Kind.TIMER
+            isClock && category == Notification.CATEGORY_ALARM -> LiveActivity.Kind.TIMER // timer done / alarm ringing
             else -> return null
         }
-        if (!sbn.isOngoing && !isCall) return null
-        // An incoming call has a full-screen "ringing" intent; a call in progress shows its duration instead.
-        val ringing = isCall && n.fullScreenIntent != null && !chrono
+        if (!sbn.isOngoing && !isCall && !(isClock && category == Notification.CATEGORY_ALARM)) return null
+        // Incoming call / timer done: a full-screen "ringing" intent. A call in progress shows its duration instead.
+        val ringing = (isCall && n.fullScreenIntent != null && !chrono) ||
+            (isClock && category == Notification.CATEGORY_ALARM)
 
-        val title = (extras.getCharSequence(Notification.EXTRA_TITLE) ?: Apps.label(this, sbn.packageName)).toString()
-        val text = (extras.getCharSequence(Notification.EXTRA_TEXT) ?: "").toString()
+        val title = title0.ifBlank {
+            when (kind) {
+                LiveActivity.Kind.GEMINI -> "Gemini Live"
+                LiveActivity.Kind.TIMER -> if (ringing) "Time's up" else "Timer"
+                else -> Apps.label(this, pkg)
+            }
+        }
         val icon = runCatching {
             (if (isCall) n.getLargeIcon()?.loadDrawable(this)?.toBitmap(96, 96) else null)
-                ?: packageManager.getApplicationIcon(sbn.packageName).toBitmap(96, 96)
+                ?: packageManager.getApplicationIcon(pkg).toBitmap(96, 96)
         }.getOrNull()
 
         // Calls (CallStyle) carry their answer / decline / hang-up intents in extras.
@@ -401,19 +431,60 @@ class MediaListenerService : NotificationListenerService() {
         }
         return LiveActivity(
             key = sbn.key,
-            packageName = sbn.packageName,
-            appName = appNames.getOrPut(sbn.packageName) { Apps.label(this, sbn.packageName) },
+            packageName = pkg,
+            appName = appNames.getOrPut(pkg) { Apps.label(this, pkg) },
             kind = kind,
             title = title,
-            text = text,
+            text = text0,
             icon = icon,
-            chronoBase = if (chrono || (isCall && !ringing)) n.`when` else 0L,
-            countDown = extras.getBoolean(Notification.EXTRA_CHRONOMETER_COUNT_DOWN),
-            accent = if (n.color != 0) n.color else 0xFFFF9F0A.toInt(),
+            chronoBase = if (chrono || (isCall && !ringing)) (if (chronoBase > 0) chronoBase else n.`when`) else 0L,
+            countDown = countDown,
+            accent = when {
+                kind == LiveActivity.Kind.TIMER -> 0xFFFF9F0A.toInt()
+                n.color != 0 -> n.color
+                else -> 0xFFFF9F0A.toInt()
+            },
             contentIntent = n.contentIntent,
             actions = actions,
             ringing = ringing,
+            pausedText = pausedText,
         )
+    }
+
+    private class ChronoInfo(val wallBase: Long, val countDown: Boolean, val paused: Boolean, val text: String)
+
+    /** Inflates the notification's views and finds the Chronometer the Clock app uses for timers. */
+    private fun readChronometer(n: Notification): ChronoInfo? {
+        @Suppress("DEPRECATION")
+        val candidates = buildList {
+            n.contentView?.let { add(it) }
+            n.bigContentView?.let { add(it) }
+            runCatching { Notification.Builder.recoverBuilder(this@MediaListenerService, n).createContentView() }
+                .getOrNull()?.let { add(it) }
+        }
+        for (rv in candidates) {
+            val root = runCatching { rv.apply(this, android.widget.FrameLayout(this)) }.getOrNull() ?: continue
+            val chrono = findChronometer(root) ?: continue
+            val texts = ArrayList<String>()
+            collectTexts(root, texts)
+            val paused = texts.any { it.contains("paused", ignoreCase = true) || it.contains("pause", ignoreCase = true) && it.length < 12 }
+            val nowElapsed = android.os.SystemClock.elapsedRealtime()
+            val countDown = if (Build.VERSION.SDK_INT >= 24) chrono.isCountDown else false
+            val wall = System.currentTimeMillis() + (chrono.base - nowElapsed)
+            return ChronoInfo(wall, countDown, paused, chrono.text?.toString().orEmpty())
+        }
+        return null
+    }
+
+    private fun findChronometer(v: android.view.View): android.widget.Chronometer? {
+        if (v is android.widget.Chronometer) return v
+        if (v is android.view.ViewGroup) for (i in 0 until v.childCount) findChronometer(v.getChildAt(i))?.let { return it }
+        return null
+    }
+
+    private fun collectTexts(v: android.view.View, out: MutableList<String>) {
+        if (v is android.widget.TextView && v !is android.widget.Chronometer) v.text?.toString()?.let { if (it.isNotBlank()) out += it }
+        if (v is android.view.ViewGroup) for (i in 0 until v.childCount) collectTexts(v.getChildAt(i), out)
     }
 
     companion object {
@@ -425,6 +496,15 @@ class MediaListenerService : NotificationListenerService() {
         fun dismissNotification(key: String) {
             runCatching { instance?.cancelNotification(key) }
         }
+
+        /** Clock apps whose timers become live activities. */
+        val CLOCK_APPS = setOf(
+            "com.google.android.deskclock", "com.android.deskclock",
+            "com.sec.android.app.clockpackage", "com.oneplus.deskclock",
+        )
+
+        /** Gemini (standalone app or inside the Google app). */
+        val GEMINI_APPS = setOf("com.google.android.apps.bard", "com.google.android.googlequicksearchbox")
 
         val BROWSERS = setOf(
             "com.android.chrome", "com.chrome.beta", "com.chrome.dev", "com.chrome.canary",

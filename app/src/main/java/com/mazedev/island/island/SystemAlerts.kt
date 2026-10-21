@@ -28,6 +28,8 @@ data class SystemAlert(
     val color: Int,
     /** 0..1 shows a little ring (e.g. battery level), null for none. */
     val level: Float? = null,
+    /** Stays colored even with the monochrome island setting (charging). */
+    val keepColor: Boolean = false,
     val id: Long = System.nanoTime(),
 )
 
@@ -44,7 +46,7 @@ class SystemAlerts(private val context: Context, private val onAlert: (SystemAle
             when (intent.action) {
                 Intent.ACTION_POWER_CONNECTED -> if (cfg.alertCharging) {
                     val b = Controls.battery(context)
-                    onAlert(SystemAlert(R.drawable.ic_charging, "Charging", "${b.percent}%", GREEN, b.percent / 100f))
+                    onAlert(SystemAlert(R.drawable.ic_charging, "", "${b.percent}%", GREEN, b.percent / 100f, keepColor = true))
                 }
                 Intent.ACTION_BATTERY_CHANGED -> {
                     val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)

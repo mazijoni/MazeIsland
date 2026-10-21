@@ -38,11 +38,15 @@ object PlaylistLoader {
         return SaveResult.Ok(finalName)
     }
 
-    /** Refreshes the song list if it's old (called when the widget redraws). */
-    fun refreshTracksIfStale(context: Context) {
+    /** Refreshes the song list if it's old or missing (called when the widget redraws). */
+    fun refreshTracksIfStale(context: Context, force: Boolean = false) {
         val id = WidgetStore.playlistId(context) ?: return
-        if (System.currentTimeMillis() - WidgetStore.tracksFetchedAt(context) < 6 * 3_600_000L) return
-        fetchTracks(id)?.let { WidgetStore.saveTracks(context, it) }
+        val age = System.currentTimeMillis() - WidgetStore.tracksFetchedAt(context)
+        val have = WidgetStore.tracks(context).isNotEmpty()
+        // Retry a failed load after a minute; refresh a good list every 6 hours.
+        if (!force && ((have && age < 6 * 3_600_000L) || (!have && age < 60_000L))) return
+        val tracks = fetchTracks(id)
+        WidgetStore.saveTracks(context, tracks ?: emptyList())
     }
 
     /**
@@ -51,18 +55,35 @@ object PlaylistLoader {
      */
     fun fetchTracks(id: String): List<WidgetStore.Track>? = try {
         val html = String(httpGet("https://open.spotify.com/embed/playlist/$id"))
-        val json = Regex("""<script id="__NEXT_DATA__" type="application/json">(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
+        val json = Regex("""<script[^>]*id=["']__NEXT_DATA__["'][^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
             .find(html)?.groupValues?.get(1) ?: throw IllegalStateException("no data")
-        val entity = JSONObject(json).getJSONObject("props").getJSONObject("pageProps")
-            .getJSONObject("state").getJSONObject("data").getJSONObject("entity")
-        val list = entity.getJSONArray("trackList")
-        (0 until minOf(list.length(), 60)).mapNotNull { i ->
-            val t = list.getJSONObject(i)
-            val uri = t.optString("uri").takeIf { it.startsWith("spotify:") } ?: return@mapNotNull null
-            WidgetStore.Track(uri, t.optString("title"), t.optString("subtitle"))
-        }
+        // Find the song list wherever it is in the page data (its exact place has moved before).
+        val out = ArrayList<WidgetStore.Track>()
+        collectTracks(org.json.JSONTokener(json).nextValue(), out)
+        out.distinctBy { it.uri }.take(60).takeIf { it.isNotEmpty() }
     } catch (_: Exception) {
         null
+    }
+
+    /** Walks the JSON looking for objects that look like songs (a spotify:track uri + a title). */
+    private fun collectTracks(node: Any?, out: MutableList<WidgetStore.Track>) {
+        when (node) {
+            is JSONObject -> {
+                val uri = node.optString("uri")
+                val title = node.optString("title").ifBlank { node.optString("name") }
+                if ((uri.startsWith("spotify:track:") || uri.startsWith("spotify:episode:")) && title.isNotBlank()) {
+                    val artist = node.optString("subtitle").ifBlank {
+                        node.optJSONArray("artists")?.let { arr ->
+                            (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("name") }.joinToString(", ")
+                        }.orEmpty()
+                    }
+                    out += WidgetStore.Track(uri, title, artist)
+                    return
+                }
+                node.keys().forEach { k -> collectTracks(node.opt(k), out) }
+            }
+            is org.json.JSONArray -> for (i in 0 until node.length()) collectTracks(node.opt(i), out)
+        }
     }
 
     private fun fetchInfo(id: String): Pair<String?, Bitmap?> = try {
@@ -82,7 +103,12 @@ object PlaylistLoader {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 8000
         c.readTimeout = 8000
-        c.setRequestProperty("User-Agent", "MazeIsland/0.1 (Android)")
+        // A normal browser user agent, so Spotify serves the regular page with its data.
+        c.setRequestProperty(
+            "User-Agent",
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36",
+        )
+        c.setRequestProperty("Accept-Language", "en")
         try {
             return c.inputStream.use { it.readBytes() }
         } finally {

@@ -138,7 +138,14 @@ class IslandService : AccessibilityService() {
         // Incoming calls open up on their own (and close when the call is answered or missed).
         scope.launch {
             var shownRinging: String? = null
+            val seen = HashSet<String>()
             MediaRepository.activities.collect { list ->
+                // A new timer / call / Gemini session: open briefly so you see it start (like iOS).
+                list.filter { !it.ringing && it.key !in seen }.forEach { a ->
+                    if (controller.mode.value == IslandMode.Collapsed) controller.showActivity(a.key, 3_000)
+                }
+                seen.retainAll(list.map { it.key }.toSet())
+                seen.addAll(list.map { it.key })
                 val ringing = list.firstOrNull { it.ringing }
                 if (ringing != null && ringing.key != shownRinging) {
                     shownRinging = ringing.key
@@ -193,7 +200,10 @@ class IslandService : AccessibilityService() {
     private inner class IslandGestures(private val view: View) : GestureDetector.SimpleOnGestureListener() {
         private val doubleTapEnabled get() = Shortcut.from(Prefs.island.value.doubleTap) != Shortcut.NONE
 
-        override fun onDown(e: MotionEvent) = true
+        override fun onDown(e: MotionEvent): Boolean {
+            torchDrag = false
+            return true
+        }
 
         private val handler = android.os.Handler(android.os.Looper.getMainLooper())
         private var pendingTap: Runnable? = null
@@ -242,7 +252,35 @@ class IslandService : AccessibilityService() {
             }
         }
 
+        // Flashlight showing in the pill: drag left / right to dim / brighten it.
+        private var torchDrag = false
+        private var torchStart = 0f
+        private var lastTorchLevel = -1
+
+        override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
+            val start = e1 ?: return false
+            if (!torchDrag) {
+                if (currentLayout().main != Compact.TORCH) return false
+                if (abs(e2.x - start.x) < abs(e2.y - start.y)) return false
+                torchDrag = true
+                torchStart = Controls.torchFraction()
+            }
+            val span = 180f * resources.displayMetrics.density
+            val f = (torchStart + (e2.x - start.x) / span).coerceIn(0.05f, 1f)
+            Controls.setTorchFraction(this@IslandService, f)
+            val lvl = Controls.torchLevel.value
+            if (lvl != lastTorchLevel) {
+                lastTorchLevel = lvl
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            }
+            return true
+        }
+
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+            if (torchDrag) {
+                torchDrag = false
+                return true
+            }
             if (abs(vx) < abs(vy) * 1.2f || abs(vx) < 400f) return false
             val media = MediaRepository.media.value ?: return false
             if (vx < 0) {
@@ -260,8 +298,17 @@ class IslandService : AccessibilityService() {
             val layout = currentLayout()
             val cfg = Prefs.island.value
             val density = resources.displayMetrics.density
-            val mainHalf = collapsedWidthDp(cfg, layout.main) * density / 2f
-            val onBubble = layout.bubble != Compact.NONE && x > view.width / 2f + mainHalf
+            // The touch window is centered on the camera; work out where the pill lies in it.
+            val c = view.width / 2f
+            val pillW = collapsedWidthDp(cfg, layout.main) * density
+            val halfH = cfg.height * density / 2f
+            val (start, end) = when (cfg.cameraPosition) {
+                "LEFT" -> (c - halfH) to (c - halfH + pillW)
+                "RIGHT" -> (c + halfH - pillW) to (c + halfH)
+                else -> (c - pillW / 2f) to (c + pillW / 2f)
+            }
+            val onBubble = layout.bubble != Compact.NONE &&
+                (if (cfg.cameraPosition == "RIGHT") x < start else x > end)
             when (if (onBubble) layout.bubble else layout.main) {
                 Compact.ACTIVITY -> MediaRepository.activities.value.firstOrNull()?.let { controller.showActivity(it.key) }
                 Compact.MEDIA -> controller.expand(startOnApps = false)
@@ -421,6 +468,7 @@ class IslandService : AccessibilityService() {
         cfg: IslandConfig,
         flags: Int,
         type: Int = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+        followCamera: Boolean = true,
     ): WindowManager.LayoutParams {
         val density = resources.displayMetrics.density
         val (centerOffsetX, topY) = cutoutAnchor((cfg.height * density).roundToInt())
@@ -435,7 +483,9 @@ class IslandService : AccessibilityService() {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = centerOffsetX + (cfg.offsetX * density).roundToInt()
+            // The full-width drawing window with a corner camera stays at the screen's left edge;
+            // the UI then places the island at the camera itself.
+            x = if (followCamera) centerOffsetX + (cfg.offsetX * density).roundToInt() else 0
             y = topY + (cfg.offsetY * density).roundToInt()
             if (Build.VERSION.SDK_INT >= 30) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
@@ -474,7 +524,7 @@ class IslandService : AccessibilityService() {
         // bar, which is on top and takes those touches anyway.
         if (!interactive && !under) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         if (!focusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        return baseParams(widthPx, heightPx, cfg, flags, type).apply {
+        return baseParams(widthPx, heightPx, cfg, flags, type, followCamera = cfg.cameraPosition == "CENTER").apply {
             alpha = 1f
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
                 if (focusable) WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE else 0
@@ -486,7 +536,14 @@ class IslandService : AccessibilityService() {
         // The pill (+ the bubble on both sides, to stay centered) plus a little extra all round so
         // near-misses still count, while most of the status bar stays free for pulling down the shade.
         val bubbleExtra = if (layout.bubble != Compact.NONE) 2 * (BUBBLE_GAP_DP + cfg.height) else 0f
-        val pillWidthDp = maxOf(collapsedWidthDp(cfg, layout.main) + bubbleExtra + 2 * TOUCH_SLOP_DP, 80f)
+        val pill = collapsedWidthDp(cfg, layout.main)
+        // Corner camera: the pill reaches out from the camera to one side, so cover both sides
+        // of the camera (the window stays centered on it).
+        val pillWidthDp = if (cfg.cameraPosition == "CENTER") {
+            maxOf(pill + bubbleExtra + 2 * TOUCH_SLOP_DP, 80f)
+        } else {
+            maxOf(2 * pill + bubbleExtra + 2 * TOUCH_SLOP_DP, 80f)
+        }
         var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
         if (!collapsed) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         return baseParams(
@@ -507,6 +564,7 @@ class IslandService : AccessibilityService() {
             val rect = metrics?.windowInsets?.displayCutout?.boundingRectTop
             if (metrics != null && rect != null && !rect.isEmpty) {
                 val screenW = metrics.bounds.width()
+                IslandGeometry.cameraXDp.value = rect.centerX() / resources.displayMetrics.density
                 return (rect.centerX() - screenW / 2) to max(0, rect.centerY() - pillHeightPx / 2)
             }
         }

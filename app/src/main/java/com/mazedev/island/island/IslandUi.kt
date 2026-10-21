@@ -88,6 +88,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -194,17 +195,23 @@ fun IslandUi(controller: IslandController) {
     // the camera (top center); the content inside just crossfades. Nothing is ever positioned
     // from a corner, so nothing can slide in from the side.
     val pillH = cfg.height.dp
+    // Corner camera: the pill grows out of the camera towards the middle, wide cards sit at the margin.
+    val camSide = cfg.cameraPosition
+    val cornerCam = camSide == "LEFT" || camSide == "RIGHT"
+    val cameraXRaw by IslandGeometry.cameraXDp.collectAsState()
+    val screenWdp = LocalConfiguration.current.screenWidthDp.toFloat()
+    val camX = (if (cameraXRaw > 0f) cameraXRaw else if (camSide == "LEFT") 36f else screenWdp - 36f) + cfg.offsetX
     val measured = if (measuredPx > 0) with(density) { measuredPx.toDp() } else pillH + 92.dp
     val targetW = when (face) {
         Face.COLLAPSED -> collapsedWidthDp(cfg, layout.main).dp
-        Face.ALERT -> minOf(cardWidth, cfg.width.dp + 170.dp)
-        Face.FLASHLIGHT -> minOf(cardWidth, 300.dp)
+        Face.ALERT -> alertWidth(cfg, (mode as? IslandMode.Alert)?.alert, cardWidth)
+        Face.FLASHLIGHT -> FLASH_W
         Face.EXPANDED, Face.NOTIF, Face.ACTIVITY, Face.VIDEO -> cardWidth
     }
     val targetH = when (face) {
         Face.COLLAPSED -> pillH
         Face.ALERT -> pillH + 8.dp
-        Face.FLASHLIGHT -> pillH + 158.dp
+        Face.FLASHLIGHT -> pillH + FLASH_H
         Face.EXPANDED -> pillH + 2.dp + pageH +
             (if (sessions.size + 1 + listOf(cfg.tabWeather, cfg.tabContacts, cfg.tabCamera).count { it } > 1) 12.dp else 0.dp) + 10.dp
         Face.NOTIF, Face.ACTIVITY -> measured
@@ -220,9 +227,27 @@ fun IslandUi(controller: IslandController) {
     val sizeSpec = if (collapsed) spring<Dp>(dampingRatio = 1f, stiffness = 420f)
     else spring(dampingRatio = 0.8f, stiffness = 360f)
     val w by animateDpAsState(targetW, sizeSpec, label = "w")
+    val wideCard = targetW >= cardWidth - 1.dp
+    val sideMargin = (screenWdp.dp - cardWidth) / 2
+    val edgeTarget = when (camSide) {
+        "LEFT" -> if (wideCard) sideMargin else (camX.dp - pillH / 2).coerceAtLeast(0.dp)
+        "RIGHT" -> if (wideCard) screenWdp.dp - sideMargin else (camX.dp + pillH / 2).coerceAtMost(screenWdp.dp)
+        else -> 0.dp
+    }
+    val edge by animateDpAsState(edgeTarget, sizeSpec, label = "edge")
+    // Left edge of the island (corner camera only; centered layouts use 0 and TopCenter).
+    val shapeX = when (camSide) {
+        "LEFT" -> edge
+        "RIGHT" -> edge - w
+        else -> 0.dp
+    }
     val h by animateDpAsState(targetH, sizeSpec, label = "h")
     val corner by animateDpAsState(
-        targetValue = if (collapsed || face == Face.ALERT) targetH / 2 else cfg.expandedCorner.dp,
+        targetValue = when {
+            collapsed || face == Face.ALERT -> targetH / 2
+            face == Face.FLASHLIGHT -> (cfg.expandedCorner + 18f).dp
+            else -> cfg.expandedCorner.dp
+        },
         animationSpec = sizeSpec,
         label = "corner",
     )
@@ -253,12 +278,18 @@ fun IslandUi(controller: IslandController) {
         modifier = Modifier
             .fillMaxSize()
             .then(if (collapsed) Modifier else Modifier.noRippleClick { controller.dismiss() }),
-        contentAlignment = Alignment.TopCenter,
+        contentAlignment = if (cornerCam) Alignment.TopStart else Alignment.TopCenter,
     ) {
         if (bubbleScale > 0.01f) {
             Box(
                 Modifier
-                    .offset(x = w / 2 + BUBBLE_GAP_DP.dp + pillH / 2)
+                    .offset(
+                        x = when (camSide) {
+                            "LEFT" -> shapeX + w + BUBBLE_GAP_DP.dp
+                            "RIGHT" -> shapeX - BUBBLE_GAP_DP.dp - pillH
+                            else -> w / 2 + BUBBLE_GAP_DP.dp + pillH / 2
+                        }
+                    )
                     .graphicsLayer {
                         scaleX = bubbleScale
                         scaleY = bubbleScale
@@ -275,7 +306,7 @@ fun IslandUi(controller: IslandController) {
                         painter = painterResource(R.drawable.ic_flashlight),
                         contentDescription = null,
                         modifier = Modifier.size(pillH * 0.5f),
-                        colorFilter = ColorFilter.tint(TorchYellow),
+                        colorFilter = ColorFilter.tint(mono(TorchYellow)),
                     )
                     else -> Unit
                 }
@@ -339,7 +370,7 @@ fun IslandUi(controller: IslandController) {
         } else Modifier
         Box(
             modifier = Modifier
-                .offset(x = nudgeX)
+                .offset(x = nudgeX + shapeX)
                 .graphicsLayer {
                     translationX = dragX.value
                     translationY = dragY.value
@@ -378,13 +409,20 @@ fun IslandUi(controller: IslandController) {
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .wrapContentSize(Alignment.TopCenter, unbounded = true)
+                        .wrapContentSize(
+                            when (camSide) {
+                                "LEFT" -> Alignment.TopStart
+                                "RIGHT" -> Alignment.TopEnd
+                                else -> Alignment.TopCenter
+                            },
+                            unbounded = true,
+                        )
                 ) {
                     when (k) {
                         Compact.NONE -> Box(Modifier.size(targetW.coerceAtLeast(pillH), pillH))
-                        Compact.MEDIA -> MiniMedia(cfg, media)
-                        Compact.ACTIVITY -> activities.firstOrNull()?.let { CompactActivity(cfg, it) }
-                        Compact.TORCH -> CompactTorch(cfg)
+                        Compact.MEDIA -> CameraGap(cfg) { MiniMedia(cfg, media) }
+                        Compact.ACTIVITY -> activities.firstOrNull()?.let { a -> CameraGap(cfg) { CompactActivity(cfg, a) } }
+                        Compact.TORCH -> CameraGap(cfg) { CompactTorch(cfg) }
                         Face.EXPANDED -> {
                             val startOnApps = (mode as? IslandMode.Expanded)?.startOnApps ?: false
                             key(startOnApps) { ExpandedCard(cfg, cardWidth, pageH, startOnApps, controller) }
@@ -401,9 +439,9 @@ fun IslandUi(controller: IslandController) {
                         Face.VIDEO -> (mode as? IslandMode.Video)?.let {
                             VideoCard(cfg, it.videoId, cardWidth, pinned, controller)
                         }
-                        Face.FLASHLIGHT -> FlashlightCard(cfg, minOf(cardWidth, 300.dp), controller)
+                        Face.FLASHLIGHT -> FlashlightCard(cfg, FLASH_W, controller)
                         Face.ALERT -> (mode as? IslandMode.Alert)?.let {
-                            AlertPill(cfg, it.alert, minOf(cardWidth, cfg.width.dp + 170.dp))
+                            AlertPill(cfg, it.alert, alertWidth(cfg, it.alert, cardWidth))
                         }
                         Face.ACTIVITY -> {
                             val key = (mode as? IslandMode.Activity)?.key
@@ -428,6 +466,16 @@ fun IslandUi(controller: IslandController) {
                 StatusRow(cfg, w, Modifier.graphicsLayer { alpha = statusAlpha })
             }
         }
+    }
+}
+
+/** With a corner camera, leaves room for the camera hole at that end of the pill. */
+@Composable
+private fun CameraGap(cfg: IslandConfig, content: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (cfg.cameraPosition == "LEFT") Spacer(Modifier.width(cfg.height.dp))
+        content()
+        if (cfg.cameraPosition == "RIGHT") Spacer(Modifier.width(cfg.height.dp))
     }
 }
 
@@ -461,8 +509,10 @@ private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth
             .padding(horizontal = cfg.expandedCorner.coerceAtLeast(14f).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Corner camera on the left: keep that side free and put both on the right (and vice versa).
+        if (cfg.cameraPosition == "LEFT") Spacer(Modifier.weight(1f))
         Text(time, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.weight(1f))
+        if (cfg.cameraPosition == "CENTER") Spacer(Modifier.weight(1f)) else Spacer(Modifier.width(12.dp))
         Text(
             "${battery.percent}%",
             color = if (battery.percent <= 20 && !battery.charging) batteryColor else Color.White,
@@ -471,6 +521,7 @@ private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth
         )
         Spacer(Modifier.width(5.dp))
         MiniBattery(battery.percent, battery.charging, batteryColor)
+        if (cfg.cameraPosition == "RIGHT") Spacer(Modifier.weight(1f))
     }
 }
 
@@ -526,6 +577,10 @@ private fun MiniBattery(percent: Int, charging: Boolean, fill: Color) {
 }
 
 private val TorchYellow = Color(0xFFFFD60A)
+
+/** Alerts with only an icon + number (charging) stay compact. */
+private fun alertWidth(cfg: IslandConfig, alert: SystemAlert?, cardWidth: Dp): Dp =
+    minOf(cardWidth, cfg.width.dp + if (alert?.title.isNullOrBlank()) 100.dp else 170.dp)
 
 private val VIDEO_BAR_H = 54.dp
 
@@ -604,8 +659,13 @@ private fun MiniMedia(cfg: IslandConfig, media: MediaState?) {
 @Composable
 private fun CompactActivity(cfg: IslandConfig, a: LiveActivity) {
     val h = cfg.height.dp
+    if (a.kind == LiveActivity.Kind.GEMINI) {
+        GeminiCompact(cfg)
+        return
+    }
     val now = rememberWallClock()
-    val accent = Color(a.accent)
+    val accent = mono(Color(a.accent))
+    val callGreen = mono(CallGreen)
     Row(
         modifier = Modifier
             .size(cfg.width.dp + IslandService.MINI_EXTRA_DP.dp, h)
@@ -616,7 +676,7 @@ private fun CompactActivity(cfg: IslandConfig, a: LiveActivity) {
         ActivityIcon(a, h - 12.dp)
         Text(
             text = a.timerText(now) ?: a.text.ifBlank { a.title },
-            color = if (a.kind == LiveActivity.Kind.CALL) CallGreen else accent,
+            color = if (a.kind == LiveActivity.Kind.CALL) callGreen else accent,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -643,16 +703,20 @@ private fun CompactTorch(cfg: IslandConfig) {
             painter = painterResource(R.drawable.ic_flashlight),
             contentDescription = null,
             modifier = Modifier.size(h * 0.5f),
-            colorFilter = ColorFilter.tint(TorchYellow),
+            colorFilter = ColorFilter.tint(mono(TorchYellow)),
         )
         if (max > 1) {
-            Text("${(level * 100 / max)}%", color = TorchYellow, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("${(level * 100 / max)}%", color = mono(TorchYellow), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }
 
 @Composable
 private fun ActivityIcon(a: LiveActivity, size: Dp) {
+    if (a.kind == LiveActivity.Kind.GEMINI) {
+        GeminiSparkle(size * 0.85f)
+        return
+    }
     val res = when (a.kind) {
         LiveActivity.Kind.CALL -> R.drawable.ic_call
         LiveActivity.Kind.TIMER -> R.drawable.ic_timer
@@ -663,7 +727,7 @@ private fun ActivityIcon(a: LiveActivity, size: Dp) {
             painter = painterResource(res),
             contentDescription = null,
             modifier = Modifier.size(size * 0.8f),
-            colorFilter = ColorFilter.tint(Color(a.accent)),
+            colorFilter = ColorFilter.tint(mono(Color(a.accent))),
         )
     } else if (a.icon != null) {
         Image(
@@ -677,13 +741,76 @@ private fun ActivityIcon(a: LiveActivity, size: Dp) {
             painter = painterResource(res),
             contentDescription = null,
             modifier = Modifier.size(size * 0.8f),
-            colorFilter = ColorFilter.tint(CallGreen),
+            colorFilter = ColorFilter.tint(mono(CallGreen)),
         )
     }
 }
 
 private val CallGreen = Color(0xFF34C759)
 private val CallRed = Color(0xFFFF453A)
+
+/** Gemini Live colors: blue → violet → rose. */
+private val GeminiColors = listOf(Color(0xFF4F8BFF), Color(0xFF9B72F3), Color(0xFFD96570))
+
+/** A soft four-point sparkle that slowly turns and shimmers through the Gemini colors. */
+@Composable
+private fun GeminiSparkle(size: Dp) {
+    val t by rememberInfiniteTransition(label = "gem").animateFloat(
+        0f, 1f, infiniteRepeatable(tween(3_000, easing = androidx.compose.animation.core.LinearEasing)), label = "gt",
+    )
+    val colors = GeminiColors.map { mono(it) }
+    Box(
+        Modifier.size(size).drawBehind {
+            val c = Offset(this.size.width / 2, this.size.height / 2)
+            val r = this.size.minDimension / 2
+            val p = androidx.compose.ui.graphics.Path().apply {
+                moveTo(c.x, c.y - r)
+                quadraticBezierTo(c.x, c.y, c.x + r, c.y)
+                quadraticBezierTo(c.x, c.y, c.x, c.y + r)
+                quadraticBezierTo(c.x, c.y, c.x - r, c.y)
+                quadraticBezierTo(c.x, c.y, c.x, c.y - r)
+                close()
+            }
+            rotate(t * 90f, c) {
+                drawPath(p, Brush.sweepGradient(colors + colors.first(), center = c))
+            }
+        }
+    )
+}
+
+/** Gemini Live in the closed island: sparkle on the left, a flowing voice wave on the right. */
+@Composable
+private fun GeminiCompact(cfg: IslandConfig) {
+    val h = cfg.height.dp
+    val phase by rememberInfiniteTransition(label = "gw").animateFloat(
+        0f, (2 * Math.PI).toFloat(), infiniteRepeatable(tween(1_400, easing = androidx.compose.animation.core.LinearEasing)), label = "gp",
+    )
+    val colors = GeminiColors.map { mono(it) }
+    Row(
+        modifier = Modifier.size(cfg.width.dp + IslandService.MINI_EXTRA_DP.dp, h).padding(horizontal = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        GeminiSparkle(h - 14.dp)
+        Box(
+            Modifier.size(width = 34.dp, height = 16.dp).drawBehind {
+                val bars = 5
+                val gap = 3.dp.toPx()
+                val bw = (size.width - gap * (bars - 1)) / bars
+                for (i in 0 until bars) {
+                    val amp = 0.35f + 0.65f * ((kotlin.math.sin(phase + i * 1.1f) + 1f) / 2f)
+                    val bh = size.height * amp
+                    drawRoundRect(
+                        brush = Brush.verticalGradient(colors, startY = 0f, endY = size.height),
+                        topLeft = Offset(i * (bw + gap), (size.height - bh) / 2),
+                        size = Size(bw, bh),
+                        cornerRadius = CornerRadius(bw / 2, bw / 2),
+                    )
+                }
+            }
+        )
+    }
+}
 
 /** Wall-clock time that updates every half second (for timers). */
 @Composable
@@ -699,86 +826,130 @@ private fun rememberWallClock(): Long {
 
 // --------------------------------------------------------- flashlight card
 
-/** iOS 18 style: a tall bar you swipe up/down for brightness, and a button to switch it on/off. */
+private val FLASH_W = 210.dp
+private val FLASH_H = 250.dp
+
+/**
+ * iOS-style flashlight: a tall box with a glowing beam above the torch. Swipe up / down anywhere
+ * to change the brightness (the beam grows and brightens), tap the torch to switch it on/off.
+ */
 @Composable
 private fun FlashlightCard(cfg: IslandConfig, width: Dp, controller: IslandController) {
     val context = LocalContext.current
     val on by Controls.torch.collectAsState()
     val level by Controls.torchLevel.collectAsState()
     val max = remember { Controls.torchMaxLevel(context) }
-    val fraction = if (!on) 0f else level.toFloat() / max.coerceAtLeast(1)
-    var barHeightPx by remember { mutableStateOf(1) }
-    val barShape = RoundedCornerShape(22.dp)
+    val target = if (!on) 0f else (level.toFloat() / max.coerceAtLeast(1)).coerceIn(0.15f, 1f)
+    val beam by animateFloatAsState(target, spring(dampingRatio = 0.85f, stiffness = 300f), label = "beam")
+    var heightPx by remember { mutableStateOf(1) }
+    var dragStart by remember { mutableStateOf(0f) }
+    val iconTint = mono(if (on) Color.White else Color.White.copy(alpha = 0.35f))
+    val beamColor = mono(Color(0xFFF2EEFF))
 
-    Row(
+    Box(
         modifier = Modifier
-            .width(width)
-            .padding(top = cfg.height.dp + 10.dp, start = 22.dp, end = 22.dp, bottom = 18.dp)
-            .height(130.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(
-                Modifier
-                    .size(64.dp)
-                    .glass(CircleShape, strong = on)
-                    .then(if (on) Modifier.background(TorchYellow.copy(alpha = 0.18f)) else Modifier)
-                    .clickable {
-                        Controls.toggleTorch(context)
-                        controller.poke()
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.ic_flashlight),
-                    contentDescription = "Flashlight",
-                    modifier = Modifier.size(28.dp),
-                    colorFilter = ColorFilter.tint(if (on) TorchYellow else Soft),
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(if (on) "On" else "Off", color = Dim, fontSize = 12.sp)
-            if (max <= 1) Text("No dimming on this phone", color = Dim, fontSize = 10.sp)
-        }
-        // Brightness bar
-        Box(
-            modifier = Modifier
-                .width(64.dp)
-                .fillMaxHeight()
-                .onSizeChanged { barHeightPx = it.height.coerceAtLeast(1) }
-                .glass(barShape)
-                .pointerInput(Unit) {
-                    detectTapGestures {
-                        Controls.setTorchFraction(context, 1f - it.y / barHeightPx)
-                        controller.poke()
-                    }
+            .size(width, cfg.height.dp + FLASH_H)
+            .onSizeChanged { heightPx = it.height.coerceAtLeast(1) }
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onDragStart = { dragStart = Controls.torchFraction() },
+                ) { change, _ ->
+                    change.consume()
+                    val moved = (change.position.y - change.previousPosition.y) / (heightPx * 0.7f)
+                    dragStart = (dragStart - moved).coerceIn(0f, 1f)
+                    Controls.setTorchFraction(context, dragStart)
+                    controller.poke()
                 }
-                .pointerInput(Unit) {
-                    detectVerticalDragGestures { change, _ ->
-                        change.consume()
-                        Controls.setTorchFraction(context, (1f - change.position.y / barHeightPx).coerceIn(0f, 1f))
-                        controller.poke()
-                    }
-                },
-            contentAlignment = Alignment.BottomCenter,
+            }
+            .drawBehind {
+                if (beam <= 0.01f) return@drawBehind
+                val cx = size.width / 2f
+                val iconTop = size.height - 92.dp.toPx()
+                // Soft wide glow
+                val glowH = size.height * (0.35f + 0.45f * beam)
+                drawOval(
+                    brush = Brush.radialGradient(
+                        0f to beamColor.copy(alpha = 0.32f * beam),
+                        1f to Color.Transparent,
+                        center = Offset(cx, iconTop - glowH * 0.35f),
+                        radius = glowH * 0.6f,
+                    ),
+                    topLeft = Offset(cx - size.width * 0.42f, iconTop - glowH),
+                    size = Size(size.width * 0.84f, glowH * 1.05f),
+                )
+                // Bright core beam
+                val coreW = 26.dp.toPx() + 18.dp.toPx() * beam
+                val coreH = glowH * 0.75f
+                drawOval(
+                    brush = Brush.verticalGradient(
+                        0f to Color.Transparent,
+                        0.45f to beamColor.copy(alpha = 0.55f * beam),
+                        0.85f to Color.White.copy(alpha = 0.95f * beam),
+                        1f to Color.White.copy(alpha = beam),
+                        startY = iconTop - coreH,
+                        endY = iconTop,
+                    ),
+                    topLeft = Offset(cx - coreW / 2, iconTop - coreH),
+                    size = Size(coreW, coreH + 6.dp.toPx()),
+                )
+            },
+    ) {
+        // Top hint: beam line + brightness sun, like iOS
+        Row(
+            Modifier.align(Alignment.TopCenter).padding(top = cfg.height.dp + 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(fraction.coerceIn(0f, 1f))
-                    .clip(barShape)
-                    .background(Color.White.copy(alpha = 0.85f))
+            Box(Modifier.width(26.dp).height(2.dp).clip(RoundedCornerShape(1.dp)).background(Color.White.copy(alpha = 0.3f)))
+            Spacer(Modifier.width(14.dp))
+            Image(
+                painter = painterResource(R.drawable.ic_brightness),
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                colorFilter = ColorFilter.tint(Color.White.copy(alpha = 0.35f)),
+            )
+        }
+        // The torch: tap to switch on/off
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 22.dp)
+                .size(64.dp)
+                .noRippleClick {
+                    Controls.toggleTorch(context)
+                    controller.poke()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(
+                painter = painterResource(R.drawable.ic_flashlight),
+                contentDescription = if (on) "Turn flashlight off" else "Turn flashlight on",
+                modifier = Modifier.size(54.dp),
+                colorFilter = ColorFilter.tint(iconTint),
+            )
+        }
+        if (max <= 1) {
+            Text(
+                "No dimming on this phone",
+                color = Dim,
+                fontSize = 10.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp),
             )
         }
     }
+}
+
+/** Accent colors turn white-ish when the "monochrome island" setting is on. */
+@Composable
+internal fun mono(c: Color): Color {
+    val cfg by Prefs.island.collectAsState()
+    return if (cfg.monochrome) Color.White.copy(alpha = (c.alpha * 0.92f).coerceAtMost(0.92f)) else c
 }
 
 // --------------------------------------------------------------- alerts
 
 @Composable
 private fun AlertPill(cfg: IslandConfig, alert: SystemAlert, width: Dp) {
-    val color = Color(alert.color)
+    val color = if (alert.keepColor) Color(alert.color) else mono(Color(alert.color))
     Row(
         modifier = Modifier
             .size(width, cfg.height.dp + 8.dp)
@@ -800,7 +971,7 @@ private fun AlertPill(cfg: IslandConfig, alert: SystemAlert, width: Dp) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
-        )
+        ) // (empty for charging: just the bolt and the percentage)
         // Leave the middle free for the camera.
         if (alert.trailing.isNotBlank()) {
             Text(alert.trailing, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
@@ -838,8 +1009,22 @@ private fun ActivityCard(
 ) {
     val now = rememberWallClock()
     val timer = a.timerText(now)
+    val geminiGlow = if (a.kind == LiveActivity.Kind.GEMINI) GeminiColors.map { mono(it) } else null
     Column(
         modifier = modifier
+            .drawBehind {
+                // Gemini Live: soft colored glow rising from the bottom of the card
+                geminiGlow?.let { cs ->
+                    drawRect(
+                        Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.55f to cs[0].copy(alpha = 0.10f),
+                            0.8f to cs[1].copy(alpha = 0.22f),
+                            1f to cs[2].copy(alpha = 0.32f),
+                        )
+                    )
+                }
+            }
             .width(width)
             .padding(start = 18.dp, end = 18.dp, bottom = 16.dp, top = cfg.height.dp + 8.dp),
     ) {
@@ -875,7 +1060,7 @@ private fun ActivityCard(
                 Spacer(Modifier.width(10.dp))
                 Text(
                     timer,
-                    color = if (a.kind == LiveActivity.Kind.CALL) CallGreen else Color(a.accent),
+                    color = mono(if (a.kind == LiveActivity.Kind.CALL) CallGreen else Color(a.accent)),
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Light,
                 )
@@ -886,8 +1071,8 @@ private fun ActivityCard(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 a.actions.forEach { (label, intent) ->
                     val tint = when (label) {
-                        "Answer" -> CallGreen
-                        "Decline", "End" -> CallRed
+                        "Answer" -> mono(CallGreen)
+                        "Decline", "End" -> mono(CallRed).copy(alpha = if (Prefs.island.value.monochrome) 0.3f else 1f)
                         else -> null
                     }
                     Box(

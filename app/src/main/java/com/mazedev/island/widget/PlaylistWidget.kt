@@ -117,7 +117,7 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
         Box(modifier = GlanceModifier.fillMaxSize().background(Color(0x59000000))) {}
 
         // Tall enough → the player on top and the playlist's songs underneath.
-        val tall = LocalSize.current.height >= 220.dp && s.tracks.isNotEmpty()
+        val tall = LocalSize.current.height >= 200.dp && s.playlistId != null
         Column(modifier = GlanceModifier.fillMaxSize()) {
         Row(
             modifier = (if (tall) GlanceModifier.fillMaxWidth().height(118.dp) else GlanceModifier.fillMaxSize())
@@ -205,6 +205,21 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
 /** The playlist's songs; tap one to play it. The one playing now is highlighted. */
 @Composable
 private fun ColumnScope.TrackList(s: WidgetStore.Snapshot) {
+    if (s.tracks.isEmpty()) {
+        Box(
+            modifier = GlanceModifier.fillMaxWidth().defaultWeight().padding(10.dp)
+                .cornerRadius(12.dp).background(Color(0x14FFFFFF))
+                .clickable(actionRunCallback<ReloadTracksAction>()),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "Couldn't load the songs yet · tap to try again",
+                style = TextStyle(color = Dim, fontSize = 12.sp),
+                maxLines = 2,
+            )
+        }
+        return
+    }
     LazyColumn(modifier = GlanceModifier.fillMaxWidth().defaultWeight().padding(start = 10.dp, end = 10.dp, bottom = 10.dp)) {
         items(s.tracks) { t ->
             val playing = s.hasNowPlaying && t.title.equals(s.title, ignoreCase = true)
@@ -250,6 +265,13 @@ private fun ColumnScope.TrackList(s: WidgetStore.Snapshot) {
 }
 
 private val TrackUriKey = ActionParameters.Key<String>("trackUri")
+
+class ReloadTracksAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        kotlinx.coroutines.withContext(Dispatchers.IO) { PlaylistLoader.refreshTracksIfStale(context, force = true) }
+        WidgetPusher.push(context)
+    }
+}
 
 class PlayTrackAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {

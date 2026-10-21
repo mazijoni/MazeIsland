@@ -81,11 +81,14 @@ data class LiveActivity(
     val actions: List<Pair<String, PendingIntent>>,
     /** Incoming (ringing) call: shown expanded with answer / decline. */
     val ringing: Boolean = false,
+    /** A paused timer's fixed time (it isn't counting). */
+    val pausedText: String? = null,
 ) {
-    enum class Kind { CALL, TIMER, NAVIGATION, OTHER }
+    enum class Kind { GEMINI, CALL, TIMER, NAVIGATION, OTHER }
 
     /** "12:34", counting up or down, or null if this activity has no timer. */
     fun timerText(nowWall: Long): String? {
+        pausedText?.let { return it }
         if (chronoBase <= 0L) return null
         val ms = if (countDown) (chronoBase - nowWall).coerceAtLeast(0) else (nowWall - chronoBase).coerceAtLeast(0)
         return formatDuration(ms)
