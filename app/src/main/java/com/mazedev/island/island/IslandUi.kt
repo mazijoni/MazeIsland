@@ -362,7 +362,7 @@ fun IslandUi(controller: IslandController) {
                         )
                     }
                 }
-                .clip(SmoothCornerShape(corner))
+                .clip(RoundedCornerShape(corner))
                 .background(Color.Black)
                 .then(if (collapsed) Modifier else Modifier.noRippleClick { controller.poke() }),
         ) {
@@ -458,7 +458,7 @@ private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth
             .fillMaxWidth()
             .height(cfg.height.dp)
             // Starts right where the rounded corner meets the straight top edge.
-            .padding(horizontal = smoothCornerReach(cfg.expandedCorner).coerceAtLeast(14f).dp),
+            .padding(horizontal = cfg.expandedCorner.coerceAtLeast(14f).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(time, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
