@@ -75,7 +75,7 @@ toggles. It also comes with a Spotify playlist widget for your home screen.
 - Paste any playlist link, no Spotify login needed
 - Blurred cover of the current song as the background
 - Play / pause / skip, and a button to open the playlist
-- Make it **taller to see and pick songs** from the playlist
+- Make it **taller to see and pick songs**: it lists the album or playlist the current song is playing from (or your saved playlist when nothing plays)
 - Optional: shows your **Google Home doorbell** snapshot for 2 minutes after a ring (there's a separate doorbell widget too)
 
 <br clear="right">
