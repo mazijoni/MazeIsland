@@ -524,7 +524,7 @@ private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth
 /** The right-hand icon cluster, in each system's order and look. */
 @Composable
 private fun StatusIcons(style: String, info: StatusInfo, signal: Boolean, wifi: Boolean, bluetooth: Boolean) {
-    val gap = if (style == "IOS") 5.dp else 6.dp
+    val gap = if (style == "PIXEL") 6.dp else 7.dp
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(gap)) {
         val bt: @Composable () -> Unit = {
             Image(
@@ -538,12 +538,12 @@ private fun StatusIcons(style: String, info: StatusInfo, signal: Boolean, wifi: 
             "IOS" -> {
                 if (bluetooth) bt()
                 if (signal && info.cellLevel >= 0) SignalBarsIos(info.cellLevel)
-                if (wifi && info.wifiLevel >= 0) WifiArcs(info.wifiLevel, stroke = 2.4f)
+                if (wifi && info.wifiLevel >= 0) WifiArcs(info.wifiLevel, thin = false)
                 BatteryIos(info.battery.percent, info.battery.charging)
             }
             "SAMSUNG" -> {
                 if (bluetooth) bt()
-                if (wifi && info.wifiLevel >= 0) WifiArcs(info.wifiLevel, stroke = 1.9f)
+                if (wifi && info.wifiLevel >= 0) WifiArcs(info.wifiLevel, thin = true)
                 if (signal && info.cellLevel >= 0) SignalBarsSamsung(info.cellLevel)
                 BatterySamsung(info.battery.percent, info.battery.charging)
             }
@@ -636,23 +636,35 @@ private fun SignalTriangle(level: Int) {
     })
 }
 
-/** iOS / Samsung: Wi-Fi fan of three arcs and a dot. */
+/**
+ * iOS / Samsung Wi-Fi: a small filled wedge at the bottom and two arcs above it, with clear gaps
+ * (three parts in total, like the real icons).
+ */
 @Composable
-private fun WifiArcs(level: Int, stroke: Float) {
-    Box(Modifier.size(width = 16.dp, height = 12.dp).drawBehind {
-        val cx = size.width / 2
-        val bottom = size.height
-        val sw = stroke.dp.toPx()
-        drawCircle(if (level >= 1) Lit else Unlit, radius = sw * 0.9f, center = Offset(cx, bottom - sw))
-        for (i in 1..3) {
-            val r = bottom * (0.36f * i) - sw / 2
+private fun WifiArcs(level: Int, thin: Boolean) {
+    Box(Modifier.size(width = 17.dp, height = 12.dp).drawBehind {
+        val h = size.height
+        val center = Offset(size.width / 2, h)
+        val sw = h * (if (thin) 0.15f else 0.19f)
+        val gap = sw * (if (thin) 1.1f else 0.8f)
+        val outer = h - sw / 2
+        val middle = outer - sw - gap
+        val wedge = middle - sw / 2 - gap
+        val lit = when {
+            level >= 3 -> 3
+            level >= 2 -> 2
+            else -> 1
+        }
+        drawArc(
+            color = if (lit >= 1) Lit else Unlit,
+            startAngle = 225f, sweepAngle = 90f, useCenter = true,
+            topLeft = Offset(center.x - wedge, center.y - wedge), size = Size(wedge * 2, wedge * 2),
+        )
+        listOf(middle, outer).forEachIndexed { i, r ->
             drawArc(
-                color = if (level >= i + 1 || (i == 1 && level >= 1)) Lit else Unlit,
-                startAngle = 225f,
-                sweepAngle = 90f,
-                useCenter = false,
-                topLeft = Offset(cx - r, bottom - sw - r),
-                size = Size(r * 2, r * 2),
+                color = if (lit >= i + 2) Lit else Unlit,
+                startAngle = 225f, sweepAngle = 90f, useCenter = false,
+                topLeft = Offset(center.x - r, center.y - r), size = Size(r * 2, r * 2),
                 style = androidx.compose.ui.graphics.drawscope.Stroke(sw, cap = StrokeCap.Round),
             )
         }
