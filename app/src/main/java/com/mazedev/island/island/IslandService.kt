@@ -93,6 +93,18 @@ class IslandService : AccessibilityService() {
 
         alerts = SystemAlerts(this) { controller.showAlert(it) }.also { it.start() }
 
+        updateLocked()
+        androidx.core.content.ContextCompat.registerReceiver(
+            this,
+            lockReceiver,
+            android.content.IntentFilter().apply {
+                addAction(android.content.Intent.ACTION_SCREEN_OFF)
+                addAction(android.content.Intent.ACTION_SCREEN_ON)
+                addAction(android.content.Intent.ACTION_USER_PRESENT)
+            },
+            androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
+        )
+
         val collapsedFlow = controller.mode.map { it == IslandMode.Collapsed }.distinctUntilChanged()
         val previewOpen = IslandPreview.mode.map { it == PreviewMode.EXPANDED || it == PreviewMode.APPS }
 
@@ -110,6 +122,7 @@ class IslandService : AccessibilityService() {
             ) { (cfg, collapsed), focus, pv, large, pinnedPx ->
                 DisplayState(cfg, interactive = !collapsed || pv, focusable = focus, large = large, pinnedHeightPx = pinnedPx)
             }
+                .combine(locked) { st, isLocked -> st.copy(locked = isLocked) }
                 .distinctUntilChanged()
                 .collect { applyDisplay(it) }
         }
@@ -283,6 +296,20 @@ class IslandService : AccessibilityService() {
         }
     }
 
+    /** Lock screen showing. */
+    private val locked = MutableStateFlow(false)
+
+    private val lockReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context, intent: android.content.Intent) {
+            updateLocked()
+        }
+    }
+
+    private fun updateLocked() {
+        val km = getSystemService(android.app.KeyguardManager::class.java)
+        locked.value = km?.isKeyguardLocked == true
+    }
+
     private data class DisplayState(
         val cfg: IslandConfig,
         val interactive: Boolean,
@@ -294,6 +321,7 @@ class IslandService : AccessibilityService() {
          * (only the height changes, so the island doesn't move).
          */
         val pinnedHeightPx: Int = 0,
+        val locked: Boolean = false,
     )
 
     private var displayType = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -427,7 +455,9 @@ class IslandService : AccessibilityService() {
         // through such a window to other apps, so while collapsed it's cut to the pill's height
         // (which sits inside the status bar, where touches go to the status bar anyway).
         // Only the height changes, never the width, so the island can't jump sideways.
-        val under = cfg.underStatusBar(this)
+        // Android never shows "display over other apps" windows on the lock screen, so while
+        // locked the island uses its normal (accessibility) layer instead.
+        val under = cfg.underStatusBar(this) && !locked.value
         val heightPx = if (state.pinnedHeightPx > 0) {
             state.pinnedHeightPx + (2 * density).roundToInt()
         } else if (under && !state.large) {
@@ -435,7 +465,7 @@ class IslandService : AccessibilityService() {
         } else {
             ((cfg.height + EXPANDED_CONTENT_DP) * density).roundToInt()
         }
-        val type = if (under) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        val type = if (under && !locked.value) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
         var flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
         // Android caps "display over other apps" windows that can't be touched at 80% opacity
@@ -492,6 +522,7 @@ class IslandService : AccessibilityService() {
     override fun onDestroy() {
         if (popupsHiddenByUs) HeadsUp.setSystemPopups(this, enabled = true)
         alerts?.stop()
+        runCatching { unregisterReceiver(lockReceiver) }
         display?.let { runCatching { wm?.removeView(it) } }
         touchTarget?.let { runCatching { wm?.removeView(it) } }
         display = null

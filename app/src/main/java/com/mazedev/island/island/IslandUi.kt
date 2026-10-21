@@ -1037,27 +1037,32 @@ private fun ExpandedCard(cfg: IslandConfig, width: Dp, pageHeight: Dp, startOnAp
     val pager = rememberPagerState(initialPage = initialPage) { pageCount }
     LaunchedEffect(pager.currentPage) { controller.poke() }
 
-    val bg: Bitmap? = sessions.getOrNull(pager.currentPage)?.blurred
     val camera = cfg.height.dp
 
     Box(modifier = Modifier.width(width)) {
-        // Blurred cover behind the whole card…
-        Crossfade(targetState = bg, animationSpec = tween(350), label = "bg", modifier = Modifier.matchParentSize()) { b ->
-            if (b != null) {
-                Image(
-                    bitmap = remember(b) { b.asImageBitmap() },
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
+        // Blurred cover behind the whole card. Each media page's cover fades with the swipe
+        // (read in the draw phase, so it follows your finger without a flash).
+        sessions.forEachIndexed { i, s ->
+            val b = s.blurred ?: return@forEachIndexed
+            Image(
+                bitmap = remember(b) { b.asImageBitmap() },
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        val pos = pager.currentPage + pager.currentPageOffsetFraction
+                        alpha = (1f - abs(pos - i)).coerceIn(0f, 1f)
+                    },
+            )
         }
         // …fading to black at the edges and around the camera, so it blends into the bezel.
         Box(
             Modifier
                 .matchParentSize()
                 .drawBehind {
-                    if (bg == null) return@drawBehind
+                    // Always drawn (it's just black over black on non-media tabs), so it never
+                    // disappears before the cover has faded out.
                     drawRect(
                         Brush.verticalGradient(
                             0f to Color.Black,
