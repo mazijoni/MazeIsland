@@ -28,13 +28,21 @@ object WidgetStore {
 
     data class Track(val uri: String, val title: String, val artist: String)
 
-    fun saveTracks(context: Context, tracks: List<Track>) {
+    fun saveTracks(context: Context, tracks: List<Track>, error: String? = null) {
         val arr = org.json.JSONArray()
         tracks.forEach { arr.put(org.json.JSONObject().put("u", it.uri).put("t", it.title).put("a", it.artist)) }
         prefs(context).edit()
             .putString("tracks", arr.toString())
             .putLong("tracksAt", System.currentTimeMillis())
+            .putString("tracksError", error)
             .apply()
+    }
+
+    /** Why the last song-list load failed (shown in the widget), or null. */
+    fun tracksError(context: Context): String? = prefs(context).getString("tracksError", null)
+
+    fun renamePlaylist(context: Context, name: String) {
+        prefs(context).edit().putString("playlistName", name).apply()
     }
 
     fun tracksFetchedAt(context: Context): Long = prefs(context).getLong("tracksAt", 0L)
@@ -57,6 +65,7 @@ object WidgetStore {
         val art: Bitmap?,
         val background: Bitmap?,
         val tracks: List<Track> = emptyList(),
+        val tracksError: String? = null,
     )
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -131,6 +140,7 @@ object WidgetStore {
             art = nowArt ?: read(context, PL_COVER),
             background = nowBg ?: read(context, PL_BG),
             tracks = tracks(context),
+            tracksError = p.getString("tracksError", null),
         )
     }
 

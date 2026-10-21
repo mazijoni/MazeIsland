@@ -120,7 +120,8 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
         val tall = LocalSize.current.height >= 200.dp && s.playlistId != null
         Column(modifier = GlanceModifier.fillMaxSize()) {
         Row(
-            modifier = (if (tall) GlanceModifier.fillMaxWidth().height(118.dp) else GlanceModifier.fillMaxSize())
+            // Tall enough for the cover and the text + buttons without clipping them.
+            modifier = (if (tall) GlanceModifier.fillMaxWidth().height(140.dp) else GlanceModifier.fillMaxSize())
                 .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -213,9 +214,9 @@ private fun ColumnScope.TrackList(s: WidgetStore.Snapshot) {
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                "Couldn't load the songs yet · tap to try again",
-                style = TextStyle(color = Dim, fontSize = 12.sp),
-                maxLines = 2,
+                "Couldn't load the songs" + (s.tracksError?.let { " ($it)" } ?: "") + " · tap to try again",
+                style = TextStyle(color = Dim, fontSize = 12.sp, textAlign = androidx.glance.text.TextAlign.Center),
+                maxLines = 3,
             )
         }
         return
