@@ -24,6 +24,7 @@ import com.mazedev.island.widget.DoorbellWidget
 import com.mazedev.island.widget.PlaylistWidget
 import com.mazedev.island.widget.WidgetPusher
 import com.mazedev.island.widget.WidgetStore
+import com.mazedev.island.widget.PlaylistLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -101,6 +102,9 @@ class MediaListenerService : NotificationListenerService() {
                 override fun onPlaybackStateChanged(state: PlaybackState?) = refresh()
                 override fun onMetadataChanged(metadata: MediaMetadata?) = refresh()
                 override fun onSessionDestroyed() = refresh()
+                override fun onQueueChanged(queue: MutableList<android.media.session.MediaSession.QueueItem>?) {
+                    if (c.packageName == MediaRepository.SPOTIFY) updateNowList(force = true)
+                }
             }
             c.registerCallback(cb, handler)
             callbacks[c] = cb
@@ -240,6 +244,62 @@ class MediaListenerService : NotificationListenerService() {
             WidgetStore.setNowPlaying(applicationContext, state)
             runCatching { WidgetPusher.push(applicationContext) }
             withContext(Dispatchers.IO) { WidgetStore.persist(applicationContext) }
+            updateNowList()
+        }
+    }
+
+    // ------------------------------------- widget song list for what's playing
+
+    private var nowListJob: kotlinx.coroutines.Job? = null
+    private var lastLookedUpTrack: String? = null
+
+    /**
+     * The widget's song list for the song playing now: Spotify's own play queue when it shares
+     * one, otherwise the album the song is on (looked up from Spotify's public pages).
+     */
+    private fun updateNowList(force: Boolean = false) {
+        val ctx = applicationContext
+        if (!WidgetStore.followNowPlaying(ctx)) return
+        val c = callbacks.keys.firstOrNull { it.packageName == MediaRepository.SPOTIFY } ?: return
+        nowListJob?.cancel()
+        nowListJob = scope.launch {
+            delay(400) // let the queue and metadata of a track change settle
+            val queue = runCatching { c.queue }.getOrNull().orEmpty()
+            if (queue.size >= 2) {
+                val tracks = queue.mapNotNull { q ->
+                    val d = q.description
+                    val t = d.title?.toString()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    WidgetStore.Track("queue:${q.queueId}", t, d.subtitle?.toString().orEmpty())
+                }.take(80)
+                WidgetStore.saveNowList(ctx, "queue", c.queueTitle?.toString(), tracks)
+                runCatching { WidgetPusher.push(ctx) }
+                return@launch
+            }
+            val md = c.metadata ?: return@launch
+            val ids = listOf(MediaMetadata.METADATA_KEY_MEDIA_ID, MediaMetadata.METADATA_KEY_MEDIA_URI)
+                .mapNotNull { md.getString(it) }
+            val trackId = ids.firstNotNullOfOrNull { Regex("""track[:/]([A-Za-z0-9]{10,})""").find(it)?.groupValues?.get(1) }
+            if (trackId == null) {
+                // Can't tell what's playing from: fall back to the saved playlist.
+                if (WidgetStore.nowListKey(ctx) != null) {
+                    WidgetStore.saveNowList(ctx, null, null, emptyList())
+                    runCatching { WidgetPusher.push(ctx) }
+                }
+                return@launch
+            }
+            if (trackId == lastLookedUpTrack && !force) return@launch
+            lastLookedUpTrack = trackId
+            val albumId = withContext(Dispatchers.IO) { runCatching { PlaylistLoader.albumForTrack(trackId) }.getOrNull() }
+            if (albumId != null && WidgetStore.nowListKey(ctx) == "album:$albumId") return@launch // same album
+            val r = albumId?.let { id -> withContext(Dispatchers.IO) { runCatching { PlaylistLoader.fetchList("album", id) }.getOrNull() } }
+            if (r != null && r.tracks.isNotEmpty()) {
+                val name = r.name ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM)
+                WidgetStore.saveNowList(ctx, "album:$albumId", name, r.tracks)
+            } else {
+                lastLookedUpTrack = null // try again on the next change
+                WidgetStore.saveNowList(ctx, null, null, emptyList())
+            }
+            runCatching { WidgetPusher.push(ctx) }
         }
     }
 

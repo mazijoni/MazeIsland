@@ -216,6 +216,13 @@ object MediaRepository {
         return true
     }
 
+    /** Jumps to a song in Spotify's play queue. */
+    fun skipToQueueItem(context: Context, queueId: Long): Boolean {
+        val c = controllerFor(context, SPOTIFY) ?: return false
+        c.transportControls.skipToQueueItem(queueId)
+        return true
+    }
+
     /** Opens the player app (its "now playing" screen if it provides one). */
     fun openPlayer(context: Context, pkg: String) {
         val activity = controllers[pkg]?.sessionActivity

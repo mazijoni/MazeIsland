@@ -38,6 +38,34 @@ object WidgetStore {
             .apply()
     }
 
+    /** Song list follows what's playing (its queue / album) instead of the saved playlist. */
+    fun followNowPlaying(context: Context): Boolean = prefs(context).getBoolean("followNow", true)
+
+    fun setFollowNowPlaying(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean("followNow", on).apply()
+    }
+
+    /** The list for the song playing now: what it's from ([key], e.g. "album:ID"), its name and songs. */
+    fun saveNowList(context: Context, key: String?, name: String?, tracks: List<Track>) {
+        val arr = org.json.JSONArray()
+        tracks.forEach { arr.put(org.json.JSONObject().put("u", it.uri).put("t", it.title).put("a", it.artist)) }
+        prefs(context).edit()
+            .putString("nowListKey", key)
+            .putString("nowListName", name)
+            .putString("nowList", arr.toString())
+            .apply()
+    }
+
+    fun nowListKey(context: Context): String? = prefs(context).getString("nowListKey", null)
+
+    private fun nowList(context: Context): List<Track> = runCatching {
+        val arr = org.json.JSONArray(prefs(context).getString("nowList", "[]"))
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            Track(o.getString("u"), o.optString("t"), o.optString("a"))
+        }
+    }.getOrDefault(emptyList())
+
     /** Why the last song-list load failed (shown in the widget), or null. */
     fun tracksError(context: Context): String? = prefs(context).getString("tracksError", null)
 
@@ -66,6 +94,8 @@ object WidgetStore {
         val background: Bitmap?,
         val tracks: List<Track> = emptyList(),
         val tracksError: String? = null,
+        /** Name of the list shown (album / playlist of the song playing), null = the saved playlist. */
+        val listName: String? = null,
     )
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -130,6 +160,7 @@ object WidgetStore {
         val has = p.getBoolean("hasNow", false)
         val nowArt = if (!has) null else if (memLoaded) memArt else read(context, NOW_ART)
         val nowBg = if (nowArt == null) null else if (memLoaded) memBg else read(context, NOW_BG)
+        val nowTracks = if (has && p.getBoolean("followNow", true)) nowList(context) else emptyList()
         return Snapshot(
             playlistId = p.getString("playlistId", null),
             playlistName = p.getString("playlistName", null),
@@ -139,8 +170,9 @@ object WidgetStore {
             isPlaying = has && p.getBoolean("playing", false),
             art = nowArt ?: read(context, PL_COVER),
             background = nowBg ?: read(context, PL_BG),
-            tracks = tracks(context),
+            tracks = nowTracks.ifEmpty { tracks(context) },
             tracksError = p.getString("tracksError", null),
+            listName = if (nowTracks.isNotEmpty()) p.getString("nowListName", null) else null,
         )
     }
 

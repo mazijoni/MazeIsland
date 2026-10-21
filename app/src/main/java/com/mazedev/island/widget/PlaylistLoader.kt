@@ -63,11 +63,27 @@ object PlaylistLoader {
      * "embed this playlist" player uses), so no login or API key is needed.
      * Tries a few ways to read the page, since Spotify changes its layout now and then.
      */
-    fun fetchTracks(id: String): TrackResult {
+    fun fetchTracks(id: String): TrackResult = fetchList("playlist", id)
+
+    /** The album a song is on (from the song's public page), or null. */
+    fun albumForTrack(trackId: String): String? {
+        val albumRe = Regex("""(?:open\.spotify\.com/album/|spotify:album:)([A-Za-z0-9]{10,})""")
+        for (url in listOf("https://open.spotify.com/track/$trackId", "https://open.spotify.com/embed/track/$trackId")) {
+            val html = runCatching { String(httpGet(url, DESKTOP_UA)) }.getOrNull() ?: continue
+            // The song page says which album it's on: <meta name="music:album" content=".../album/ID">
+            val meta = Regex("""music:album["'][^>]*content=["'][^"']*album/([A-Za-z0-9]{10,})""").find(html)
+                ?: Regex("""content=["'][^"']*album/([A-Za-z0-9]{10,})["'][^>]*music:album""").find(html)
+            (meta ?: albumRe.find(html))?.let { return it.groupValues[1] }
+        }
+        return null
+    }
+
+    /** Songs of a playlist or album ([kind] = "playlist" / "album"). */
+    fun fetchList(kind: String, id: String): TrackResult {
         var lastError = "no connection"
         for (ua in listOf(MOBILE_UA, DESKTOP_UA)) {
             val html = try {
-                String(httpGet("https://open.spotify.com/embed/playlist/$id", ua))
+                String(httpGet("https://open.spotify.com/embed/$kind/$id", ua))
             } catch (e: HttpError) {
                 lastError = if (e.code == 404) "playlist not found or private (make it public in Spotify)"
                 else "Spotify said ${e.code}"
@@ -94,7 +110,7 @@ object PlaylistLoader {
                 name = Regex("""<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)""")
                     .find(html)?.groupValues?.get(1)?.let(::unescapeHtml)
                     ?: Regex("""<title>([^<]+)</title>""").find(html)?.groupValues?.get(1)
-                        ?.substringBefore(" | Spotify")?.substringBefore(" - playlist")?.let(::unescapeHtml)
+                        ?.substringBefore(" | Spotify")?.substringBefore(" - playlist")?.substringBefore(" - Album")?.let(::unescapeHtml)
                         ?.takeIf { it.isNotBlank() && !it.equals("Spotify", true) }
             }
             val tracks = out.distinctBy { it.uri }.take(60)

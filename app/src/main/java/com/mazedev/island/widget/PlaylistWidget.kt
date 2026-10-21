@@ -89,7 +89,7 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
     // Spotify running → control it directly. Not running → open the playlist in Spotify.
     val playAction: Action = if (s.hasNowPlaying) actionRunCallback<PlayPauseAction>() else openPlaylist
 
-    val heading = s.playlistName ?: "Tap to pick a playlist"
+    val heading = s.listName ?: s.playlistName ?: "Tap to pick a playlist"
     val line1 = if (s.hasNowPlaying) s.title else (s.playlistName ?: "No playlist yet")
     val line2 = when {
         s.hasNowPlaying -> s.artist
@@ -117,7 +117,7 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
         Box(modifier = GlanceModifier.fillMaxSize().background(Color(0x59000000))) {}
 
         // Tall enough → the player on top and the playlist's songs underneath.
-        val tall = LocalSize.current.height >= 200.dp && s.playlistId != null
+        val tall = LocalSize.current.height >= 200.dp && (s.playlistId != null || s.tracks.isNotEmpty())
         Column(modifier = GlanceModifier.fillMaxSize()) {
         Row(
             // Tall enough for the cover and the text + buttons without clipping them.
@@ -277,6 +277,11 @@ class ReloadTracksAction : ActionCallback {
 class PlayTrackAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         val uri = parameters[TrackUriKey] ?: return
+        // A song from Spotify's own play queue: jump to it, so the rest of the album/playlist follows.
+        if (uri.startsWith("queue:")) {
+            uri.removePrefix("queue:").toLongOrNull()?.let { MediaRepository.skipToQueueItem(context, it) }
+            return
+        }
         if (!MediaRepository.playSpotifyUri(context, uri)) {
             runCatching {
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

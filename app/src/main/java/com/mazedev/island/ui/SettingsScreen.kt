@@ -327,6 +327,19 @@ private fun WidgetCard() {
             Spacer(Modifier.height(8.dp))
             Text(it, color = Muted, fontSize = 13.sp)
         }
+        Spacer(Modifier.height(8.dp))
+        var follow by remember { mutableStateOf(com.mazedev.island.widget.WidgetStore.followNowPlaying(context)) }
+        ToggleRow("Song list follows what's playing", follow) { v ->
+            follow = v
+            com.mazedev.island.widget.WidgetStore.setFollowNowPlaying(context, v)
+            scope.launch { runCatching { com.mazedev.island.widget.WidgetPusher.push(context) } }
+        }
+        Text(
+            "When tall, the widget lists the songs of the album or playlist the current song is playing " +
+                "from. Your saved playlist shows when nothing is playing.",
+            color = Muted,
+            fontSize = 12.sp,
+        )
     }
 }
 
