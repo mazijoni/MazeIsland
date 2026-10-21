@@ -1675,7 +1675,7 @@ private fun ScrubBar(s: MediaState, controller: IslandController) {
     val pos = dragFraction?.let { (it * s.durationMs).toLong() } ?: pendingSeek ?: livePos
     val fraction = (pos.toFloat() / s.durationMs).coerceIn(0f, 1f)
     var widthPx by remember { mutableStateOf(1) }
-    val thickness by animateDpAsState(if (dragFraction != null) 9.dp else 5.dp, label = "thick")
+    val thickness by animateDpAsState(if (dragFraction != null) 6.dp else 3.5.dp, label = "thick")
 
     Column(Modifier.fillMaxWidth()) {
         Box(
@@ -1711,20 +1711,13 @@ private fun ScrubBar(s: MediaState, controller: IslandController) {
                 },
             contentAlignment = Alignment.CenterStart,
         ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(thickness)
-                    .clip(RoundedCornerShape(thickness / 2))
-                    .background(Color.White.copy(alpha = 0.18f))
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth(fraction)
-                        .background(Color.White.copy(alpha = if (dragFraction != null) 0.95f else 0.75f))
-                )
-            }
+            WavyProgress(
+                fraction = fraction,
+                // Wavy while playing; flattens out when paused or while you drag.
+                waving = s.isPlaying && dragFraction == null,
+                thickness = thickness,
+                active = dragFraction != null,
+            )
         }
         Row(Modifier.fillMaxWidth()) {
             Text(formatDuration(pos), color = Dim, fontSize = 11.sp)
@@ -1732,6 +1725,66 @@ private fun ScrubBar(s: MediaState, controller: IslandController) {
             Text("-" + formatDuration((s.durationMs - pos).coerceAtLeast(0)), color = Dim, fontSize = 11.sp)
         }
     }
+}
+
+/**
+ * Progress line where the played part is a gently moving wave while music plays, and the
+ * rest is a flat, dim line. The wave smoothly flattens when paused.
+ */
+@Composable
+private fun WavyProgress(fraction: Float, waving: Boolean, thickness: Dp, active: Boolean) {
+    val amplitude by animateFloatAsState(if (waving) 1f else 0f, tween(400), label = "amp")
+    val phase by rememberInfiniteTransition(label = "wave").animateFloat(
+        initialValue = 0f,
+        targetValue = (2 * Math.PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(1600, easing = androidx.compose.animation.core.LinearEasing)),
+        label = "phase",
+    )
+    val playedColor = Color.White.copy(alpha = if (active) 0.95f else 0.85f)
+    val restColor = Color.White.copy(alpha = 0.2f)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(14.dp)
+            .drawBehind {
+                val stroke = thickness.toPx().coerceAtMost(size.height / 2)
+                val midY = size.height / 2f
+                val endX = size.width * fraction.coerceIn(0f, 1f)
+                val amp = (size.height / 2f - stroke / 2f) * 0.75f * amplitude
+                val wavelength = 22.dp.toPx()
+
+                // Remaining part: flat line
+                if (endX < size.width) {
+                    drawLine(
+                        color = restColor,
+                        start = Offset(endX + stroke, midY),
+                        end = Offset(size.width - stroke / 2, midY),
+                        strokeWidth = stroke,
+                        cap = StrokeCap.Round,
+                    )
+                }
+                // Played part: wave (a flat line when amplitude is 0)
+                if (endX > stroke / 2) {
+                    val path = androidx.compose.ui.graphics.Path()
+                    val step = 2f
+                    var x = stroke / 2
+                    path.moveTo(x, midY + amp * kotlin.math.sin(x / wavelength * 2 * Math.PI.toFloat() - phase))
+                    while (x < endX) {
+                        x = minOf(x + step, endX)
+                        // Wave tapers off near the playhead so it meets the flat line cleanly.
+                        val taper = ((endX - x) / (wavelength * 0.6f)).coerceIn(0f, 1f)
+                        path.lineTo(x, midY + amp * taper * kotlin.math.sin(x / wavelength * 2 * Math.PI.toFloat() - phase))
+                    }
+                    drawPath(
+                        path,
+                        color = playedColor,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke, cap = StrokeCap.Round),
+                    )
+                    // Playhead
+                    drawCircle(playedColor, radius = stroke * 0.9f, center = Offset(endX, midY))
+                }
+            }
+    )
 }
 
 // ------------------------------------------------------------------ pieces
