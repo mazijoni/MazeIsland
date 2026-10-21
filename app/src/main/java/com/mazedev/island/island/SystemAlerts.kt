@@ -2,7 +2,10 @@ package com.mazedev.island.island
 
 import android.Manifest
 import android.app.NotificationManager
+import android.bluetooth.BluetoothA2dp
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothHeadset
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -33,6 +36,7 @@ class SystemAlerts(private val context: Context, private val onAlert: (SystemAle
     private var lastBatteryPct = -1
     private var lastRinger = -1
     private var lastDnd: Boolean? = null
+    private val lastBtAlert = HashMap<String, Long>()
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
@@ -77,11 +81,23 @@ class SystemAlerts(private val context: Context, private val onAlert: (SystemAle
                 Intent.ACTION_USER_PRESENT -> if (cfg.alertUnlock) {
                     onAlert(SystemAlert(R.drawable.ic_unlock, "Unlocked", "", WHITE))
                 }
-                BluetoothDevice.ACTION_ACL_CONNECTED -> if (cfg.alertBluetooth && canReadBluetooth()) {
+                // Only when headphones/speakers actually connect for audio (calls or media), not when
+                // a device just shows up nearby or makes a brief background link.
+                BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED,
+                BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> if (cfg.alertBluetooth && canReadBluetooth()) {
+                    val state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)
                     @Suppress("DEPRECATION")
                     val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
-                    val name = runCatching { device?.name }.getOrNull() ?: "Bluetooth device"
-                    onAlert(SystemAlert(R.drawable.ic_headphones, name, "Connected", BLUE))
+                    val address = device?.address
+                    if (state == BluetoothProfile.STATE_CONNECTED && address != null) {
+                        // Both profiles report the same connection; show it once.
+                        val now = System.currentTimeMillis()
+                        if (now - (lastBtAlert[address] ?: 0L) > 15_000L) {
+                            lastBtAlert[address] = now
+                            val name = runCatching { device.name }.getOrNull() ?: "Bluetooth device"
+                            onAlert(SystemAlert(R.drawable.ic_headphones, name, "Connected", BLUE))
+                        }
+                    }
                 }
             }
         }
@@ -101,7 +117,10 @@ class SystemAlerts(private val context: Context, private val onAlert: (SystemAle
             addAction(AudioManager.RINGER_MODE_CHANGED_ACTION)
             addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED)
             addAction(Intent.ACTION_USER_PRESENT)
-            if (canReadBluetooth()) addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            if (canReadBluetooth()) {
+                addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+                addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+            }
         }
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
     }
