@@ -226,7 +226,9 @@ private fun ColumnScope.TrackList(s: WidgetStore.Snapshot) {
             val playing = s.hasNowPlaying && t.title.equals(s.title, ignoreCase = true)
             // Spotify running → start the song through it; otherwise open the song in Spotify.
             val action: Action = if (s.hasNowPlaying) {
-                actionRunCallback<PlayTrackAction>(actionParametersOf(TrackUriKey to t.uri))
+                actionRunCallback<PlayTrackAction>(
+                    actionParametersOf(TrackUriKey to t.uri, TrackTitleKey to t.title, TrackArtistKey to t.artist)
+                )
             } else {
                 actionStartActivity(
                     Intent(Intent.ACTION_VIEW, Uri.parse(t.uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -266,6 +268,8 @@ private fun ColumnScope.TrackList(s: WidgetStore.Snapshot) {
 }
 
 private val TrackUriKey = ActionParameters.Key<String>("trackUri")
+private val TrackTitleKey = ActionParameters.Key<String>("trackTitle")
+private val TrackArtistKey = ActionParameters.Key<String>("trackArtist")
 
 class ReloadTracksAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
@@ -277,12 +281,10 @@ class ReloadTracksAction : ActionCallback {
 class PlayTrackAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         val uri = parameters[TrackUriKey] ?: return
-        // A song from Spotify's own play queue: jump to it, so the rest of the album/playlist follows.
-        if (uri.startsWith("queue:")) {
-            uri.removePrefix("queue:").toLongOrNull()?.let { MediaRepository.skipToQueueItem(context, it) }
-            return
-        }
-        if (!MediaRepository.playSpotifyUri(context, uri)) {
+        val title = parameters[TrackTitleKey].orEmpty()
+        val artist = parameters[TrackArtistKey].orEmpty()
+        // Queue songs jump within Spotify's queue, so the rest of the album/playlist follows.
+        if (!MediaRepository.playSpotifyTrack(context, uri, title, artist) && !uri.startsWith("queue:")) {
             runCatching {
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }

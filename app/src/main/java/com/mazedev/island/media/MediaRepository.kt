@@ -216,6 +216,42 @@ object MediaRepository {
         return true
     }
 
+    /**
+     * Plays one song in Spotify. Tries the direct way first (the queue, or the song's link) and
+     * checks that the song actually changed; if Spotify ignored it, asks Spotify to search for the
+     * song and play it (the same thing Google Assistant uses), which Spotify always supports.
+     */
+    suspend fun playSpotifyTrack(context: Context, uri: String, title: String, artist: String): Boolean {
+        val c = controllerFor(context, SPOTIFY) ?: return false
+        fun playingIt() = c.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE)
+            ?.equals(title, ignoreCase = true) == true &&
+            c.playbackState?.state == PlaybackState.STATE_PLAYING
+        val actions = c.playbackState?.actions ?: 0L
+        var tried = false
+        if (uri.startsWith("queue:")) {
+            uri.removePrefix("queue:").toLongOrNull()?.let { c.transportControls.skipToQueueItem(it); tried = true }
+        } else if (uri.startsWith("spotify:") && (actions and PlaybackState.ACTION_PLAY_FROM_URI) != 0L) {
+            c.transportControls.playFromUri(Uri.parse(uri), Bundle())
+            tried = true
+        }
+        if (tried) {
+            repeat(12) {
+                kotlinx.coroutines.delay(200)
+                if (playingIt()) return true
+            }
+        }
+        if (title.isBlank()) return tried
+        c.transportControls.playFromSearch(
+            listOf(title, artist).filter { it.isNotBlank() }.joinToString(" "),
+            Bundle().apply {
+                putString(android.provider.MediaStore.EXTRA_MEDIA_FOCUS, android.provider.MediaStore.Audio.Media.ENTRY_CONTENT_TYPE)
+                putString(android.provider.MediaStore.EXTRA_MEDIA_TITLE, title)
+                if (artist.isNotBlank()) putString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST, artist)
+            },
+        )
+        return true
+    }
+
     /** Jumps to a song in Spotify's play queue. */
     fun skipToQueueItem(context: Context, queueId: Long): Boolean {
         val c = controllerFor(context, SPOTIFY) ?: return false
