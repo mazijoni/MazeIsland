@@ -2,6 +2,13 @@ package com.mazedev.island.widget
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import androidx.glance.LocalSize
+import androidx.glance.layout.ColumnScope
+import androidx.glance.action.actionParametersOf
+import androidx.glance.appwidget.lazy.LazyColumn
+import androidx.glance.appwidget.lazy.items
+import androidx.glance.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
@@ -55,7 +62,10 @@ class PlaylistWidget : GlanceAppWidget() {
     override val sizeMode: SizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val snap = withContext(Dispatchers.IO) { WidgetStore.load(context) }
+        val snap = withContext(Dispatchers.IO) {
+            runCatching { PlaylistLoader.refreshTracksIfStale(context) }
+            WidgetStore.load(context)
+        }
         // Someone rang the doorbell in the last couple of minutes → show the camera snapshot instead.
         val door = if (Prefs.island.value.doorbellTakeover) {
             withContext(Dispatchers.IO) { DoorbellStore.recent(context) }
@@ -106,8 +116,12 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
         // Dark scrim so text stays readable on bright covers
         Box(modifier = GlanceModifier.fillMaxSize().background(Color(0x59000000))) {}
 
+        // Tall enough → the player on top and the playlist's songs underneath.
+        val tall = LocalSize.current.height >= 220.dp && s.tracks.isNotEmpty()
+        Column(modifier = GlanceModifier.fillMaxSize()) {
         Row(
-            modifier = GlanceModifier.fillMaxSize().padding(14.dp),
+            modifier = (if (tall) GlanceModifier.fillMaxWidth().height(118.dp) else GlanceModifier.fillMaxSize())
+                .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Sharp cover
@@ -179,6 +193,70 @@ private fun WidgetContent(context: Context, s: WidgetStore.Snapshot) {
                     // Always opens the chosen playlist in Spotify
                     GlassButton(R.drawable.ic_playlist, "Open playlist", openPlaylist)
                 }
+            }
+        }
+        if (tall) {
+            TrackList(s)
+        }
+        }
+    }
+}
+
+/** The playlist's songs; tap one to play it. The one playing now is highlighted. */
+@Composable
+private fun ColumnScope.TrackList(s: WidgetStore.Snapshot) {
+    LazyColumn(modifier = GlanceModifier.fillMaxWidth().defaultWeight().padding(start = 10.dp, end = 10.dp, bottom = 10.dp)) {
+        items(s.tracks) { t ->
+            val playing = s.hasNowPlaying && t.title.equals(s.title, ignoreCase = true)
+            // Spotify running → start the song through it; otherwise open the song in Spotify.
+            val action: Action = if (s.hasNowPlaying) {
+                actionRunCallback<PlayTrackAction>(actionParametersOf(TrackUriKey to t.uri))
+            } else {
+                actionStartActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(t.uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+            Row(
+                modifier = GlanceModifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp)
+                    .cornerRadius(12.dp)
+                    .background(if (playing) Color(0x33FFFFFF) else Color(0x14FFFFFF))
+                    .clickable(action)
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = GlanceModifier.defaultWeight()) {
+                    Text(
+                        t.title,
+                        style = TextStyle(color = White, fontSize = 13.sp, fontWeight = if (playing) FontWeight.Bold else FontWeight.Medium),
+                        maxLines = 1,
+                    )
+                    if (t.artist.isNotBlank()) {
+                        Text(t.artist, style = TextStyle(color = Dim, fontSize = 11.sp), maxLines = 1)
+                    }
+                }
+                if (playing) {
+                    Image(
+                        provider = ImageProvider(R.drawable.ic_music),
+                        contentDescription = "Playing",
+                        modifier = GlanceModifier.size(14.dp),
+                        colorFilter = ColorFilter.tint(White),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val TrackUriKey = ActionParameters.Key<String>("trackUri")
+
+class PlayTrackAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        val uri = parameters[TrackUriKey] ?: return
+        if (!MediaRepository.playSpotifyUri(context, uri)) {
+            runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
         }
     }

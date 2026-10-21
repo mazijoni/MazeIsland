@@ -26,6 +26,27 @@ object WidgetStore {
     @Volatile private var memLoaded = false
     @Volatile private var dirty = false
 
+    data class Track(val uri: String, val title: String, val artist: String)
+
+    fun saveTracks(context: Context, tracks: List<Track>) {
+        val arr = org.json.JSONArray()
+        tracks.forEach { arr.put(org.json.JSONObject().put("u", it.uri).put("t", it.title).put("a", it.artist)) }
+        prefs(context).edit()
+            .putString("tracks", arr.toString())
+            .putLong("tracksAt", System.currentTimeMillis())
+            .apply()
+    }
+
+    fun tracksFetchedAt(context: Context): Long = prefs(context).getLong("tracksAt", 0L)
+
+    fun tracks(context: Context): List<Track> = runCatching {
+        val arr = org.json.JSONArray(prefs(context).getString("tracks", "[]"))
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            Track(o.getString("u"), o.optString("t"), o.optString("a"))
+        }
+    }.getOrDefault(emptyList())
+
     data class Snapshot(
         val playlistId: String?,
         val playlistName: String?,
@@ -35,6 +56,7 @@ object WidgetStore {
         val isPlaying: Boolean,
         val art: Bitmap?,
         val background: Bitmap?,
+        val tracks: List<Track> = emptyList(),
     )
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -108,6 +130,7 @@ object WidgetStore {
             isPlaying = has && p.getBoolean("playing", false),
             art = nowArt ?: read(context, PL_COVER),
             background = nowBg ?: read(context, PL_BG),
+            tracks = tracks(context),
         )
     }
 

@@ -362,7 +362,7 @@ fun IslandUi(controller: IslandController) {
                         )
                     }
                 }
-                .clip(RoundedCornerShape(corner))
+                .clip(SmoothCornerShape(corner))
                 .background(Color.Black)
                 .then(if (collapsed) Modifier else Modifier.noRippleClick { controller.poke() }),
         ) {
@@ -457,8 +457,8 @@ private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth
         modifier = modifier
             .fillMaxWidth()
             .height(cfg.height.dp)
-            // Pulled in towards the camera, away from the rounded corners.
-            .padding(horizontal = (cfg.expandedCorner * 0.6f + 22f).coerceIn(36f, 52f).dp),
+            // Starts right where the rounded corner meets the straight top edge.
+            .padding(horizontal = smoothCornerReach(cfg.expandedCorner).coerceAtLeast(14f).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(time, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)

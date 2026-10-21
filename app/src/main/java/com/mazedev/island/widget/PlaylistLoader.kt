@@ -30,9 +30,39 @@ object PlaylistLoader {
             ?: return SaveResult.Error("That doesn't look like a playlist link. In Spotify: playlist → ⋯ → Share → Copy link.")
         val (name, cover) = withContext(Dispatchers.IO) { fetchInfo(id) }
         val finalName = name ?: "Playlist"
-        withContext(Dispatchers.IO) { WidgetStore.savePlaylist(context, id, finalName, cover) }
+        withContext(Dispatchers.IO) {
+            WidgetStore.savePlaylist(context, id, finalName, cover)
+            fetchTracks(id)?.let { WidgetStore.saveTracks(context, it) }
+        }
         runCatching { PlaylistWidget().updateAll(context) }
         return SaveResult.Ok(finalName)
+    }
+
+    /** Refreshes the song list if it's old (called when the widget redraws). */
+    fun refreshTracksIfStale(context: Context) {
+        val id = WidgetStore.playlistId(context) ?: return
+        if (System.currentTimeMillis() - WidgetStore.tracksFetchedAt(context) < 6 * 3_600_000L) return
+        fetchTracks(id)?.let { WidgetStore.saveTracks(context, it) }
+    }
+
+    /**
+     * The playlist's songs, read from Spotify's public embed page (the same data the
+     * "embed this playlist" player uses), so no login or API key is needed.
+     */
+    fun fetchTracks(id: String): List<WidgetStore.Track>? = try {
+        val html = String(httpGet("https://open.spotify.com/embed/playlist/$id"))
+        val json = Regex("""<script id="__NEXT_DATA__" type="application/json">(.*?)</script>""", RegexOption.DOT_MATCHES_ALL)
+            .find(html)?.groupValues?.get(1) ?: throw IllegalStateException("no data")
+        val entity = JSONObject(json).getJSONObject("props").getJSONObject("pageProps")
+            .getJSONObject("state").getJSONObject("data").getJSONObject("entity")
+        val list = entity.getJSONArray("trackList")
+        (0 until minOf(list.length(), 60)).mapNotNull { i ->
+            val t = list.getJSONObject(i)
+            val uri = t.optString("uri").takeIf { it.startsWith("spotify:") } ?: return@mapNotNull null
+            WidgetStore.Track(uri, t.optString("title"), t.optString("subtitle"))
+        }
+    } catch (_: Exception) {
+        null
     }
 
     private fun fetchInfo(id: String): Pair<String?, Bitmap?> = try {
