@@ -457,18 +457,72 @@ private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth
         modifier = modifier
             .fillMaxWidth()
             .height(cfg.height.dp)
-            .padding(horizontal = (cfg.expandedCorner * 0.6f).coerceIn(16f, 28f).dp),
+            // Pulled in towards the camera, away from the rounded corners.
+            .padding(horizontal = (cfg.expandedCorner * 0.6f + 22f).coerceIn(36f, 52f).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(time, color = Soft, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(time, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.weight(1f))
         Text(
-            (if (battery.charging) "⚡" else "") + "${battery.percent}%",
-            color = batteryColor,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
+            "${battery.percent}%",
+            color = if (battery.percent <= 20 && !battery.charging) batteryColor else Color.White,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
         )
+        Spacer(Modifier.width(5.dp))
+        MiniBattery(battery.percent, battery.charging, batteryColor)
     }
+}
+
+/** Small minimal battery: outline, fill to the level, a bolt while charging. */
+@Composable
+private fun MiniBattery(percent: Int, charging: Boolean, fill: Color) {
+    Box(
+        Modifier
+            .size(width = 23.dp, height = 12.dp)
+            .drawBehind {
+                val nubW = 1.6.dp.toPx()
+                val bodyW = size.width - nubW - 1.dp.toPx()
+                val stroke = 1.3.dp.toPx()
+                val r = 3.2.dp.toPx()
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.55f),
+                    topLeft = Offset(stroke / 2, stroke / 2),
+                    size = Size(bodyW - stroke, size.height - stroke),
+                    cornerRadius = CornerRadius(r, r),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(stroke),
+                )
+                val inset = stroke + 1.2.dp.toPx()
+                val innerW = (bodyW - inset * 2) * (percent / 100f).coerceIn(0.04f, 1f)
+                drawRoundRect(
+                    color = if (charging) fill else if (percent <= 20) fill else Color.White,
+                    topLeft = Offset(inset, inset),
+                    size = Size(innerW, size.height - inset * 2),
+                    cornerRadius = CornerRadius(r / 2, r / 2),
+                )
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.55f),
+                    topLeft = Offset(bodyW + 1.dp.toPx() - nubW / 2, size.height * 0.32f),
+                    size = Size(nubW, size.height * 0.36f),
+                    cornerRadius = CornerRadius(nubW, nubW),
+                )
+                if (charging) {
+                    // Little bolt in the middle
+                    val cx = bodyW / 2
+                    val h = size.height
+                    val bolt = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(cx + h * 0.08f, h * 0.12f)
+                        lineTo(cx - h * 0.22f, h * 0.56f)
+                        lineTo(cx - h * 0.02f, h * 0.56f)
+                        lineTo(cx - h * 0.1f, h * 0.88f)
+                        lineTo(cx + h * 0.22f, h * 0.42f)
+                        lineTo(cx + h * 0.02f, h * 0.42f)
+                        close()
+                    }
+                    drawPath(bolt, Color.Black)
+                }
+            }
+    )
 }
 
 private val TorchYellow = Color(0xFFFFD60A)
