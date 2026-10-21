@@ -480,8 +480,8 @@ private fun CameraGap(cfg: IslandConfig, content: @Composable () -> Unit) {
 }
 
 /**
- * Minimal clock (left of the camera) and battery % (right), in the empty corners of the open
- * island.
+ * Clock on one side of the camera; signal, Wi-Fi, Bluetooth and battery on the other, drawn in
+ * the chosen phone style (iOS, Pixel or Samsung), since the open island covers the real ones.
  */
 @Composable
 private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth: Dp, modifier: Modifier = Modifier) {
@@ -490,16 +490,19 @@ private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth
     val time = remember(now / 15_000) {
         android.text.format.DateFormat.getTimeFormat(context).format(java.util.Date(now))
     }
-    val battery by produceState(Controls.battery(context)) {
+    val info by produceState(StatusInfo.read(context)) {
         while (true) {
-            delay(20_000)
-            value = Controls.battery(context)
+            delay(5_000)
+            value = StatusInfo.read(context)
         }
     }
-    val batteryColor = when {
-        battery.charging -> Color(0xFF7FE39A)
-        battery.percent <= 20 -> Color(0xFFFF8A80)
-        else -> Soft
+    LaunchedEffect(Unit) { BtDevices.start(context) }
+    val devices by BtDevices.devices.collectAsState()
+    val style = cfg.statusStyle
+    val clockStyle = when (style) {
+        "IOS" -> TextStyle(color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        "SAMSUNG" -> TextStyle(color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        else -> TextStyle(color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, fontFamily = PixelFont)
     }
     Row(
         modifier = modifier
@@ -509,71 +512,267 @@ private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth
             .padding(horizontal = cfg.expandedCorner.coerceAtLeast(14f).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Corner camera on the left: keep that side free and put both on the right (and vice versa).
+        // Corner camera on the left: keep that side free and put everything on the right (and vice versa).
         if (cfg.cameraPosition == "LEFT") Spacer(Modifier.weight(1f))
-        Text(time, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text(time, style = clockStyle)
         if (cfg.cameraPosition == "CENTER") Spacer(Modifier.weight(1f)) else Spacer(Modifier.width(12.dp))
-        Text(
-            "${battery.percent}%",
-            color = if (battery.percent <= 20 && !battery.charging) batteryColor else Color.White,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Spacer(Modifier.width(5.dp))
-        MiniBattery(battery.percent, battery.charging, batteryColor)
+        StatusIcons(style, info, cfg.statusShowSignal, cfg.statusShowWifi, cfg.statusShowBluetooth && devices.isNotEmpty())
         if (cfg.cameraPosition == "RIGHT") Spacer(Modifier.weight(1f))
     }
 }
 
-/** Small minimal battery: outline, fill to the level, a bolt while charging. */
+/** The right-hand icon cluster, in each system's order and look. */
 @Composable
-private fun MiniBattery(percent: Int, charging: Boolean, fill: Color) {
-    Box(
-        Modifier
-            .size(width = 23.dp, height = 12.dp)
-            .drawBehind {
-                val nubW = 1.6.dp.toPx()
-                val bodyW = size.width - nubW - 1.dp.toPx()
-                val stroke = 1.3.dp.toPx()
-                val r = 3.2.dp.toPx()
-                drawRoundRect(
-                    color = Color.White.copy(alpha = 0.55f),
-                    topLeft = Offset(stroke / 2, stroke / 2),
-                    size = Size(bodyW - stroke, size.height - stroke),
-                    cornerRadius = CornerRadius(r, r),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(stroke),
-                )
-                val inset = stroke + 1.2.dp.toPx()
-                val innerW = (bodyW - inset * 2) * (percent / 100f).coerceIn(0.04f, 1f)
-                drawRoundRect(
-                    color = if (charging) fill else if (percent <= 20) fill else Color.White,
-                    topLeft = Offset(inset, inset),
-                    size = Size(innerW, size.height - inset * 2),
-                    cornerRadius = CornerRadius(r / 2, r / 2),
-                )
-                drawRoundRect(
-                    color = Color.White.copy(alpha = 0.55f),
-                    topLeft = Offset(bodyW + 1.dp.toPx() - nubW / 2, size.height * 0.32f),
-                    size = Size(nubW, size.height * 0.36f),
-                    cornerRadius = CornerRadius(nubW, nubW),
-                )
-                if (charging) {
-                    // Little bolt in the middle
-                    val cx = bodyW / 2
-                    val h = size.height
-                    val bolt = androidx.compose.ui.graphics.Path().apply {
-                        moveTo(cx + h * 0.08f, h * 0.12f)
-                        lineTo(cx - h * 0.22f, h * 0.56f)
-                        lineTo(cx - h * 0.02f, h * 0.56f)
-                        lineTo(cx - h * 0.1f, h * 0.88f)
-                        lineTo(cx + h * 0.22f, h * 0.42f)
-                        lineTo(cx + h * 0.02f, h * 0.42f)
-                        close()
-                    }
-                    drawPath(bolt, Color.Black)
-                }
+private fun StatusIcons(style: String, info: StatusInfo, signal: Boolean, wifi: Boolean, bluetooth: Boolean) {
+    val gap = if (style == "IOS") 5.dp else 6.dp
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(gap)) {
+        val bt: @Composable () -> Unit = {
+            Image(
+                painter = painterResource(R.drawable.ic_bluetooth),
+                contentDescription = null,
+                modifier = Modifier.size(if (style == "IOS") 13.dp else 14.dp),
+                colorFilter = ColorFilter.tint(Color.White),
+            )
+        }
+        when (style) {
+            "IOS" -> {
+                if (bluetooth) bt()
+                if (signal && info.cellLevel >= 0) SignalBarsIos(info.cellLevel)
+                if (wifi && info.wifiLevel >= 0) WifiArcs(info.wifiLevel, stroke = 2.4f)
+                BatteryIos(info.battery.percent, info.battery.charging)
             }
-    )
+            "SAMSUNG" -> {
+                if (bluetooth) bt()
+                if (wifi && info.wifiLevel >= 0) WifiArcs(info.wifiLevel, stroke = 1.9f)
+                if (signal && info.cellLevel >= 0) SignalBarsSamsung(info.cellLevel)
+                BatterySamsung(info.battery.percent, info.battery.charging)
+            }
+            else -> {
+                if (bluetooth) bt()
+                if (wifi && info.wifiLevel >= 0) WifiWedge(info.wifiLevel)
+                if (signal && info.cellLevel >= 0) SignalTriangle(info.cellLevel)
+                BatteryPixel(info.battery.percent, info.battery.charging)
+            }
+        }
+    }
+}
+
+/** Google Sans Text on Pixels (falls back to the system font elsewhere). */
+private val PixelFont: FontFamily = run {
+    val base = Typeface.create("google-sans-text", Typeface.NORMAL)
+    FontFamily(if (Build.VERSION.SDK_INT >= 28) Typeface.create(base, 500, false) else base)
+}
+
+private data class StatusInfo(val battery: Controls.Battery, val wifiLevel: Int, val cellLevel: Int) {
+    companion object {
+        @Suppress("DEPRECATION")
+        fun read(context: Context): StatusInfo {
+            val cm = context.getSystemService(ConnectivityManager::class.java)
+            val caps = runCatching { cm.getNetworkCapabilities(cm.activeNetwork) }.getOrNull()
+            val wifi = if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                val rssi = if (Build.VERSION.SDK_INT >= 29) caps.signalStrength else -60
+                if (rssi == Int.MIN_VALUE) 3 else WifiManager.calculateSignalLevel(rssi, 5).coerceIn(0, 4)
+            } else -1
+            val cell = if (Build.VERSION.SDK_INT >= 28) {
+                runCatching { context.getSystemService(TelephonyManager::class.java)?.signalStrength?.level }
+                    .getOrNull()?.coerceIn(0, 4) ?: -1
+            } else -1
+            return StatusInfo(Controls.battery(context), wifi, cell)
+        }
+    }
+}
+
+private val Lit = Color.White
+private val Unlit = Color.White.copy(alpha = 0.3f)
+
+/** iOS: four rounded bars of rising height. */
+@Composable
+private fun SignalBarsIos(level: Int) {
+    Box(Modifier.size(width = 17.dp, height = 11.dp).drawBehind {
+        val gap = 1.6.dp.toPx()
+        val bw = (size.width - gap * 3) / 4
+        for (i in 0 until 4) {
+            val bh = size.height * (0.35f + 0.217f * i)
+            drawRoundRect(
+                if (i < level.coerceAtLeast(1)) Lit else Unlit,
+                topLeft = Offset(i * (bw + gap), size.height - bh),
+                size = Size(bw, bh),
+                cornerRadius = CornerRadius(1.dp.toPx(), 1.dp.toPx()),
+            )
+        }
+    })
+}
+
+/** Samsung: four slim bars. */
+@Composable
+private fun SignalBarsSamsung(level: Int) {
+    Box(Modifier.size(width = 14.dp, height = 13.dp).drawBehind {
+        val gap = 1.4.dp.toPx()
+        val bw = (size.width - gap * 3) / 4
+        for (i in 0 until 4) {
+            val bh = size.height * (0.25f + 0.25f * i)
+            drawRect(
+                if (i < level.coerceAtLeast(1)) Lit else Unlit,
+                topLeft = Offset(i * (bw + gap), size.height - bh),
+                size = Size(bw, bh),
+            )
+        }
+    })
+}
+
+/** Pixel: a filled right triangle, lit up to the level. */
+@Composable
+private fun SignalTriangle(level: Int) {
+    Box(Modifier.size(14.dp).drawBehind {
+        val tri = androidx.compose.ui.graphics.Path().apply {
+            moveTo(size.width, 0f)
+            lineTo(size.width, size.height)
+            lineTo(0f, size.height)
+            close()
+        }
+        drawPath(tri, Unlit)
+        val frac = (level.coerceIn(1, 4)) / 4f
+        clipRect(right = size.width * frac) { drawPath(tri, Lit) }
+    })
+}
+
+/** iOS / Samsung: Wi-Fi fan of three arcs and a dot. */
+@Composable
+private fun WifiArcs(level: Int, stroke: Float) {
+    Box(Modifier.size(width = 16.dp, height = 12.dp).drawBehind {
+        val cx = size.width / 2
+        val bottom = size.height
+        val sw = stroke.dp.toPx()
+        drawCircle(if (level >= 1) Lit else Unlit, radius = sw * 0.9f, center = Offset(cx, bottom - sw))
+        for (i in 1..3) {
+            val r = bottom * (0.36f * i) - sw / 2
+            drawArc(
+                color = if (level >= i + 1 || (i == 1 && level >= 1)) Lit else Unlit,
+                startAngle = 225f,
+                sweepAngle = 90f,
+                useCenter = false,
+                topLeft = Offset(cx - r, bottom - sw - r),
+                size = Size(r * 2, r * 2),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(sw, cap = StrokeCap.Round),
+            )
+        }
+    })
+}
+
+/** Pixel: filled Wi-Fi wedge, the unlit part dimmed. */
+@Composable
+private fun WifiWedge(level: Int) {
+    Box(Modifier.size(width = 18.dp, height = 13.dp).drawBehind {
+        val cx = size.width / 2
+        val bottom = size.height
+        fun wedge(r: Float, c: Color) = drawArc(
+            color = c, startAngle = 225f, sweepAngle = 90f, useCenter = true,
+            topLeft = Offset(cx - r, bottom - r), size = Size(r * 2, r * 2),
+        )
+        val rMax = size.height * 1.02f
+        wedge(rMax, Unlit)
+        wedge(rMax * listOf(0.25f, 0.45f, 0.65f, 0.82f, 1f)[level.coerceIn(0, 4)], Lit)
+    })
+}
+
+/** iOS: filled battery with the number inside. */
+@Composable
+private fun BatteryIos(percent: Int, charging: Boolean) {
+    val measurer = rememberTextMeasurer()
+    val fill = when {
+        charging -> Color(0xFF34C759)
+        percent <= 20 -> Color(0xFFFF453A)
+        else -> Color.White
+    }
+    Box(Modifier.size(width = 27.dp, height = 13.dp).drawBehind {
+        val nub = 1.6.dp.toPx()
+        val bodyW = size.width - nub - 1.dp.toPx()
+        val r = 4.dp.toPx()
+        drawRoundRect(Color.White.copy(alpha = 0.35f), size = Size(bodyW, size.height), cornerRadius = CornerRadius(r, r))
+        clipRect(right = bodyW * (percent / 100f).coerceIn(0f, 1f)) {
+            drawRoundRect(fill, size = Size(bodyW, size.height), cornerRadius = CornerRadius(r, r))
+        }
+        drawRoundRect(
+            Color.White.copy(alpha = 0.35f),
+            topLeft = Offset(bodyW + 1.dp.toPx(), size.height * 0.33f),
+            size = Size(nub, size.height * 0.34f),
+            cornerRadius = CornerRadius(nub, nub),
+        )
+        val t = measurer.measure(
+            "$percent",
+            TextStyle(color = if (percent > 55 && !charging) Color.Black else Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold),
+        )
+        drawText(t, topLeft = Offset((bodyW - t.size.width) / 2f, (size.height - t.size.height) / 2f))
+    })
+}
+
+/** Pixel: rounded pill with the number inside. */
+@Composable
+private fun BatteryPixel(percent: Int, charging: Boolean) {
+    val measurer = rememberTextMeasurer()
+    val fill = when {
+        charging -> Color(0xFF7FE39A)
+        percent <= 20 -> Color(0xFFFF8A80)
+        else -> Color.White
+    }
+    Box(Modifier.size(width = 30.dp, height = 15.dp).drawBehind {
+        val nub = 2.dp.toPx()
+        val bodyW = size.width - nub - 1.dp.toPx()
+        val r = size.height / 2.6f
+        drawRoundRect(Color.White.copy(alpha = 0.45f), size = Size(bodyW, size.height), cornerRadius = CornerRadius(r, r))
+        clipRect(right = bodyW * (percent / 100f).coerceIn(0f, 1f)) {
+            drawRoundRect(fill, size = Size(bodyW, size.height), cornerRadius = CornerRadius(r, r))
+        }
+        drawRoundRect(
+            Color.White.copy(alpha = 0.45f),
+            topLeft = Offset(bodyW + 1.dp.toPx(), size.height * 0.3f),
+            size = Size(nub, size.height * 0.4f),
+            cornerRadius = CornerRadius(nub, nub),
+        )
+        val t = measurer.measure(
+            (if (charging) "⚡" else "") + percent,
+            TextStyle(color = Color(0xFF1B1B1F), fontSize = 10.5.sp, fontFamily = PixelFont, fontWeight = FontWeight.Bold),
+        )
+        drawText(t, topLeft = Offset((bodyW - t.size.width) / 2f, (size.height - t.size.height) / 2f))
+    })
+}
+
+/** Samsung: percentage text followed by an outlined battery. */
+@Composable
+private fun BatterySamsung(percent: Int, charging: Boolean) {
+    val fill = when {
+        charging -> Color(0xFF3DDC84)
+        percent <= 15 -> Color(0xFFFF5252)
+        else -> Color.White
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("$percent%", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.width(3.dp))
+        Box(Modifier.size(width = 9.dp, height = 15.dp).drawBehind {
+            val nubH = 1.6.dp.toPx()
+            val sw = 1.2.dp.toPx()
+            drawRoundRect(
+                Color.White,
+                topLeft = Offset(size.width * 0.3f, 0f),
+                size = Size(size.width * 0.4f, nubH),
+                cornerRadius = CornerRadius(1f, 1f),
+            )
+            drawRoundRect(
+                Color.White,
+                topLeft = Offset(sw / 2, nubH + sw / 2),
+                size = Size(size.width - sw, size.height - nubH - sw),
+                cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(sw),
+            )
+            val inner = size.height - nubH - sw * 3
+            val h = inner * (percent / 100f).coerceIn(0.05f, 1f)
+            drawRect(
+                fill,
+                topLeft = Offset(sw * 1.5f, size.height - sw * 1.5f - h),
+                size = Size(size.width - sw * 3, h),
+            )
+        })
+    }
 }
 
 private val TorchYellow = Color(0xFFFFD60A)

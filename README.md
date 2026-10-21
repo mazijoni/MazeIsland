@@ -80,7 +80,7 @@ toggles. It also comes with a Spotify playlist widget for your home screen.
 <br clear="right">
 
 ### Make it yours
-Middle or **corner camera** layout, position and size to fit your camera exactly, *always-on* or *hidden until needed* style, colors or **monochrome**,
+Middle or **corner camera** layout, an **iOS, Pixel or Samsung style status bar** (clock, signal, Wi-Fi, Bluetooth, battery) inside the open island, position and size to fit your camera exactly, *always-on* or *hidden until needed* style, colors or **monochrome**,
 corner roundness, side padding, icon size/columns/brightness/black-and-white, which tabs and
 controls show, and more, all with a live preview.
 

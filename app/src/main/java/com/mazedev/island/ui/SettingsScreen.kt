@@ -381,10 +381,27 @@ private fun IslandCard() {
         )
 
         RealStatusBarRow(cfg.realStatusBar)
-        if (!cfg.realStatusBar) ToggleRow("Clock & battery in the open island", cfg.statusInIsland) { v ->
+        if (!cfg.realStatusBar) ToggleRow("Status bar in the open island", cfg.statusInIsland) { v ->
             Prefs.updateIsland { it.copy(statusInIsland = v) }
             IslandPreview.show(PreviewMode.EXPANDED)
             IslandPreview.release(2_500)
+        }
+        if (!cfg.realStatusBar && cfg.statusInIsland) {
+            Text("Status bar look", fontSize = 13.sp, color = Muted, modifier = Modifier.padding(top = 2.dp, bottom = 6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("IOS" to "iOS", "PIXEL" to "Pixel", "SAMSUNG" to "Samsung").forEach { (key, label) ->
+                    StyleChip(label, cfg.statusStyle == key, Modifier.weight(1f)) {
+                        Prefs.updateIsland { it.copy(statusStyle = key) }
+                        IslandPreview.show(PreviewMode.EXPANDED)
+                        IslandPreview.release(2_500)
+                    }
+                }
+            }
+            ToggleRow("Mobile signal", cfg.statusShowSignal) { v -> Prefs.updateIsland { it.copy(statusShowSignal = v) } }
+            ToggleRow("Wi-Fi", cfg.statusShowWifi) { v -> Prefs.updateIsland { it.copy(statusShowWifi = v) } }
+            ToggleRow("Bluetooth (when a device is connected)", cfg.statusShowBluetooth) { v ->
+                Prefs.updateIsland { it.copy(statusShowBluetooth = v) }
+            }
         }
         ToggleRow("Monochrome (white instead of colors, except music & charging)", cfg.monochrome) { v ->
             Prefs.updateIsland { it.copy(monochrome = v) }

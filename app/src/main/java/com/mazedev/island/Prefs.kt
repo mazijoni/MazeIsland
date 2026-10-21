@@ -76,6 +76,11 @@ data class IslandConfig(
     val monochrome: Boolean = false,
     /** Where the front camera is: CENTER, LEFT or RIGHT. */
     val cameraPosition: String = "CENTER",
+    /** Look of the clock/battery row in the open island: IOS, PIXEL or SAMSUNG. */
+    val statusStyle: String = "PIXEL",
+    val statusShowSignal: Boolean = true,
+    val statusShowWifi: Boolean = true,
+    val statusShowBluetooth: Boolean = true,
     val menuApps: List<String> = listOf("com.spotify.music"),
 )
 
@@ -125,6 +130,10 @@ object Prefs {
             weatherCity = sp.getString("weatherCity", d.weatherCity) ?: "",
             monochrome = sp.getBoolean("monochrome", d.monochrome),
             cameraPosition = sp.getString("cameraPosition", d.cameraPosition) ?: d.cameraPosition,
+            statusStyle = sp.getString("statusStyle", d.statusStyle) ?: d.statusStyle,
+            statusShowSignal = sp.getBoolean("statusSignal", d.statusShowSignal),
+            statusShowWifi = sp.getBoolean("statusWifi", d.statusShowWifi),
+            statusShowBluetooth = sp.getBoolean("statusBt", d.statusShowBluetooth),
             menuApps = sp.getString("menuApps", null)
                 ?.split(",")
                 ?.filter { it.isNotBlank() }
@@ -173,6 +182,10 @@ object Prefs {
             .putString("weatherCity", c.weatherCity)
             .putBoolean("monochrome", c.monochrome)
             .putString("cameraPosition", c.cameraPosition)
+            .putString("statusStyle", c.statusStyle)
+            .putBoolean("statusSignal", c.statusShowSignal)
+            .putBoolean("statusWifi", c.statusShowWifi)
+            .putBoolean("statusBt", c.statusShowBluetooth)
             .putString("menuApps", c.menuApps.joinToString(","))
             .apply()
     }
