@@ -87,7 +87,7 @@ class IslandService : AccessibilityService() {
             setOnDoubleTapListener(null) // own, faster double-tap handling (see IslandGestures)
         }
         @Suppress("ClickableViewAccessibility")
-        tapView.setOnTouchListener { _, ev -> detector.onTouchEvent(ev); true }
+        tapView.setOnTouchListener { _, ev -> pokeAwake(); detector.onTouchEvent(ev); true }
         windowManager.addView(tapView, touchParams(Prefs.island.value, true, currentLayout()))
         touchTarget = tapView
 
@@ -123,6 +123,7 @@ class IslandService : AccessibilityService() {
                 DisplayState(cfg, interactive = !collapsed || pv, focusable = focus, large = large, pinnedHeightPx = pinnedPx)
             }
                 .combine(locked) { st, isLocked -> st.copy(locked = isLocked) }
+                .combine(keepAwake) { st, awake -> st.copy(keepScreenOn = awake && st.locked) }
                 .distinctUntilChanged()
                 .collect { applyDisplay(it) }
         }
@@ -355,7 +356,32 @@ class IslandService : AccessibilityService() {
     private fun updateLocked() {
         val km = getSystemService(android.app.KeyguardManager::class.java)
         locked.value = km?.isKeyguardLocked == true
+        if (!locked.value) keepAwake.value = false
     }
+
+    /**
+     * The lock screen turns the screen off a few seconds after its last touch, and touches on the
+     * island don't count as using the lock screen. So while the island is being used there, keep
+     * the screen on, until it hasn't been touched for a while.
+     */
+    private val keepAwake = MutableStateFlow(false)
+    private var awakeJob: kotlinx.coroutines.Job? = null
+
+    private fun pokeAwake() {
+        if (!locked.value) return
+        keepAwake.value = true
+        awakeJob?.cancel()
+        awakeJob = scope.launch {
+            // Stay on while it's open; once it closes (or stays untouched), let the screen time out.
+            kotlinx.coroutines.delay(KEEP_AWAKE_MS)
+            while (::controller.isInitialized && controller.mode.value != IslandMode.Collapsed &&
+                System.currentTimeMillis() - openedAt < MAX_AWAKE_OPEN_MS
+            ) kotlinx.coroutines.delay(1_000)
+            keepAwake.value = false
+        }
+        openedAt = System.currentTimeMillis()
+    }
+    private var openedAt = 0L
 
     private data class DisplayState(
         val cfg: IslandConfig,
@@ -369,6 +395,8 @@ class IslandService : AccessibilityService() {
          */
         val pinnedHeightPx: Int = 0,
         val locked: Boolean = false,
+        /** Recently used on the lock screen: don't let the short lock-screen timeout turn it off. */
+        val keepScreenOn: Boolean = false,
     )
 
     private var displayType = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -395,7 +423,7 @@ class IslandService : AccessibilityService() {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
             setContent { IslandUi(controller) }
         }
-        return IslandRootView(this) { controller.dismiss() }.apply {
+        return IslandRootView(this, onTouch = { pokeAwake() }) { controller.dismiss() }.apply {
             addView(
                 composeView,
                 ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
@@ -524,6 +552,7 @@ class IslandService : AccessibilityService() {
         // bar, which is on top and takes those touches anyway.
         if (!interactive && !under) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         if (!focusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        if (state.keepScreenOn) flags = flags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         return baseParams(widthPx, heightPx, cfg, flags, type, followCamera = cfg.cameraPosition == "CENTER").apply {
             alpha = 1f
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
@@ -596,6 +625,8 @@ class IslandService : AccessibilityService() {
 
         /** Max gap between the two taps of a double tap. */
         const val DOUBLE_TAP_MS = 230L
+        const val KEEP_AWAKE_MS = 30_000L
+        const val MAX_AWAKE_OPEN_MS = 120_000L
 
         /** Extra width of the collapsed "now playing" pill (cover on the left, bars on the right). */
         const val MINI_EXTRA_DP = 96f

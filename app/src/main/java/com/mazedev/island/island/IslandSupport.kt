@@ -268,7 +268,11 @@ class OverlayLifecycleOwner : SavedStateRegistryOwner {
 }
 
 /** Root view of the overlay window. Taps outside the island collapse it. */
-class IslandRootView(context: Context, private val onOutsideTouch: () -> Unit) : FrameLayout(context) {
+class IslandRootView(
+    context: Context,
+    private val onTouch: () -> Unit = {},
+    private val onOutsideTouch: () -> Unit,
+) : FrameLayout(context) {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_UP) onOutsideTouch()
@@ -282,6 +286,7 @@ class IslandRootView(context: Context, private val onOutsideTouch: () -> Unit) :
             onOutsideTouch()
             return false
         }
+        onTouch()
         return super.dispatchTouchEvent(ev)
     }
 }
