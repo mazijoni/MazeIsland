@@ -45,6 +45,7 @@ toggles. It also comes with a Spotify playlist widget for your home screen.
 - With two things at once, the second one detaches into a **bubble**, like on iPhone
 - Clock app **timers** count down in the island, with Stop / Add a minute when they go off
 - **Gemini Live** sessions get their own animated look
+- Works on the **lock screen** too (the screen stays on while you use it)
 - Quick alerts for **charging, low battery, silent/vibrate, Do Not Disturb, Bluetooth headphones connecting**
 
 ### App tab & quick controls
@@ -109,6 +110,19 @@ Updates install over the old version, just download the link again.
 | Do Not Disturb control | Allow *Do Not Disturb access* |
 | Headphone battery, Bluetooth alerts | Allow *Nearby devices* |
 | Weather / Contacts / Camera tabs | Allow location / contacts / camera when you turn them on |
+| Wi-Fi, signal and Bluetooth in the island's status bar | Allow *Nearby devices* for Bluetooth; signal needs no extra permission |
+
+### Hide Android's own timer pill
+Android 16 (Pixel) and One UI 7+ (Samsung) show their own timer / stopwatch pill in the status bar,
+next to the island. To keep only the island:
+
+- **Pixel:** long-press the **Clock** app, *App info, Notifications*, and turn off **Live updates**.
+  Do the same for any other app that shows a pill (Maps, delivery apps...).
+- **Samsung:** *Settings, Notifications, Live notifications*, and turn off the Clock app.
+- Or tap **Open Clock notification settings** in Maze Island (*Live activities & alerts*).
+
+The island still picks the timer up from its normal notification. The green chip during phone
+calls is part of Android itself and can't be turned off.
 
 ## Privacy
 
@@ -157,6 +171,7 @@ Actions and published as the latest release.
 - Google Play doesn't allow this kind of accessibility use, so the app is only available here.
 - YouTube videos play in the island through YouTube's embedded player; some videos don't allow embedding.
 - The widget's song list uses Spotify's public embed data, which Spotify could change.
+- Android's own call chip in the status bar can't be hidden (see *Hide Android's own timer pill*).
 
 ---
 

@@ -848,6 +848,29 @@ private fun LiveCard() {
             color = Muted,
             fontSize = 12.sp,
         )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Android 16 and Samsung also show their own timer pill in the status bar. To hide it, " +
+                "turn off \"Live updates\" (Samsung: \"Live notifications\") for the Clock app. " +
+                "The island keeps working. The green call chip can't be turned off.",
+            color = Muted,
+            fontSize = 12.sp,
+        )
+        val clockPkg = remember {
+            listOf("com.google.android.deskclock", "com.sec.android.app.clockpackage", "com.android.deskclock")
+                .firstOrNull { pkg -> runCatching { context.packageManager.getPackageInfo(pkg, 0) }.isSuccess }
+        }
+        if (clockPkg != null) {
+            OutlinedButton(onClick = {
+                runCatching {
+                    context.startActivity(
+                        android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, clockPkg)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }) { Text("Open Clock notification settings") }
+        }
         Spacer(Modifier.height(10.dp))
         Text("Quick alerts", fontWeight = FontWeight.Medium)
         ToggleRow("Charging", cfg.alertCharging) { v -> Prefs.updateIsland { it.copy(alertCharging = v) } }
