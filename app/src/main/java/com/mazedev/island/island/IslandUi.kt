@@ -432,194 +432,43 @@ fun IslandUi(controller: IslandController) {
 }
 
 /**
- * A copy of the Pixel status bar (clock left, signal / Wi-Fi / battery right), drawn inside the
- * open island because it covers the real one. Same font and the same distance from the screen
- * edges, so it lines up with the real status bar when the island opens and closes.
+ * Minimal clock (left of the camera) and battery % (right), in the empty corners of the open
+ * island.
  */
 @Composable
-private fun StatusRow(cfg: IslandConfig, cardWidth: Dp, modifier: Modifier = Modifier) {
+private fun StatusRow(cfg: IslandConfig, @Suppress("UNUSED_PARAMETER") cardWidth: Dp, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val now = rememberWallClock()
     val time = remember(now / 15_000) {
         android.text.format.DateFormat.getTimeFormat(context).format(java.util.Date(now))
     }
-    val status by produceState(StatusInfo.read(context)) {
+    val battery by produceState(Controls.battery(context)) {
         while (true) {
-            delay(5_000)
-            value = StatusInfo.read(context)
+            delay(20_000)
+            value = Controls.battery(context)
         }
     }
-    // Real status bar insets are measured from the screen edges; the card starts at expandedMargin.
-    val screenW = LocalConfiguration.current.screenWidthDp.dp
-    val cardInset = ((screenW - cardWidth) / 2).coerceAtLeast(0.dp)
-    val start = (PIXEL_STATUS_START - cardInset).coerceAtLeast(10.dp)
-    val end = (PIXEL_STATUS_END - cardInset).coerceAtLeast(10.dp)
-
+    val batteryColor = when {
+        battery.charging -> Color(0xFF7FE39A)
+        battery.percent <= 20 -> Color(0xFFFF8A80)
+        else -> Soft
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
             .height(cfg.height.dp)
-            .offset(y = cfg.statusOffsetY.dp)
-            .padding(start = start, end = end),
+            .padding(horizontal = (cfg.expandedCorner * 0.6f).coerceIn(16f, 28f).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            time,
-            color = Color.White,
-            fontSize = 15.sp,
-            fontFamily = PixelFont,
-            fontWeight = FontWeight.Medium,
-            style = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false)),
-        )
+        Text(time, color = Soft, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.weight(1f))
-        if (status.cellLevel >= 0) {
-            SignalGlyph(status.cellLevel)
-            Spacer(Modifier.width(7.dp))
-        }
-        if (status.wifiLevel >= 0) {
-            WifiGlyph(status.wifiLevel)
-            Spacer(Modifier.width(7.dp))
-        }
-        PixelBattery(status.battery.percent, status.battery.charging)
+        Text(
+            (if (battery.charging) "⚡" else "") + "${battery.percent}%",
+            color = batteryColor,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+        )
     }
-}
-
-private val PIXEL_STATUS_START = 34.dp
-private val PIXEL_STATUS_END = 30.dp
-
-/** Google Sans Text on Pixels (falls back to the system font elsewhere). */
-private val PixelFont: FontFamily = run {
-    val base = Typeface.create("google-sans-text", Typeface.NORMAL)
-    FontFamily(if (Build.VERSION.SDK_INT >= 28) Typeface.create(base, 500, false) else base)
-}
-
-private data class StatusInfo(val battery: Controls.Battery, val wifiLevel: Int, val cellLevel: Int) {
-    companion object {
-        @Suppress("DEPRECATION")
-        fun read(context: Context): StatusInfo {
-            val cm = context.getSystemService(ConnectivityManager::class.java)
-            val caps = runCatching { cm.getNetworkCapabilities(cm.activeNetwork) }.getOrNull()
-            val wifi = if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
-                val rssi = if (Build.VERSION.SDK_INT >= 29) caps.signalStrength else -60
-                if (rssi == Int.MIN_VALUE) 3 else WifiManager.calculateSignalLevel(rssi, 5).coerceIn(0, 4)
-            } else -1
-            val cell = if (Build.VERSION.SDK_INT >= 28) {
-                runCatching {
-                    context.getSystemService(TelephonyManager::class.java)?.signalStrength?.level
-                }.getOrNull()?.coerceIn(0, 4) ?: -1
-            } else -1
-            return StatusInfo(Controls.battery(context), wifi, cell)
-        }
-    }
-}
-
-/** Four rising bars, like Pixel's mobile signal icon. */
-@Composable
-private fun SignalGlyph(level: Int) {
-    Box(
-        Modifier
-            .size(width = 16.dp, height = 14.dp)
-            .drawBehind {
-                val bars = 4
-                val gap = 1.8.dp.toPx()
-                val bw = (size.width - gap * (bars - 1)) / bars
-                for (i in 0 until bars) {
-                    val bh = size.height * (0.4f + 0.2f * i)
-                    drawRoundRect(
-                        color = if (i < level.coerceAtLeast(1)) Color.White else Color.White.copy(alpha = 0.3f),
-                        topLeft = Offset(i * (bw + gap), size.height - bh),
-                        size = Size(bw, bh),
-                        cornerRadius = CornerRadius(bw / 2, bw / 2),
-                    )
-                }
-            }
-    )
-}
-
-/** Pixel-style Wi-Fi fan: filled wedge, the unlit part dimmed. */
-@Composable
-private fun WifiGlyph(level: Int) {
-    Box(
-        Modifier
-            .size(width = 19.dp, height = 14.dp)
-            .drawBehind {
-                val cx = size.width / 2f
-                val bottom = size.height
-                val rMax = size.height * 1.02f
-                // Dim full fan, then the lit part on top.
-                fun wedge(r: Float, color: Color) {
-                    drawArc(
-                        color = color,
-                        startAngle = 225f,
-                        sweepAngle = 90f,
-                        useCenter = true,
-                        topLeft = Offset(cx - r, bottom - r),
-                        size = Size(r * 2, r * 2),
-                    )
-                }
-                wedge(rMax, Color.White.copy(alpha = 0.3f))
-                val lit = when (level) {
-                    0 -> 0.25f
-                    1 -> 0.45f
-                    2 -> 0.65f
-                    3 -> 0.82f
-                    else -> 1f
-                }
-                wedge(rMax * lit, Color.White)
-            }
-    )
-}
-
-/** Pixel's battery: a rounded pill with the number inside, filled to the level. */
-@Composable
-private fun PixelBattery(percent: Int, charging: Boolean) {
-    val fill = when {
-        charging -> Color(0xFF7FE39A)
-        percent <= 20 -> Color(0xFFFF8A80)
-        else -> Color.White
-    }
-    val measurer = rememberTextMeasurer()
-    val label = if (charging) "⚡$percent" else "$percent"
-    Box(
-        Modifier
-            .size(width = 30.dp, height = 15.dp)
-            .drawBehind {
-                val nub = 2.dp.toPx()
-                val bodyW = size.width - nub - 1.dp.toPx()
-                val r = size.height / 2.6f
-                // Empty part
-                drawRoundRect(
-                    color = Color.White.copy(alpha = 0.45f),
-                    size = Size(bodyW, size.height),
-                    cornerRadius = CornerRadius(r, r),
-                )
-                // Filled part (clipped to the pill)
-                clipRect(right = bodyW * (percent / 100f).coerceIn(0f, 1f)) {
-                    drawRoundRect(color = fill, size = Size(bodyW, size.height), cornerRadius = CornerRadius(r, r))
-                }
-                // Nub
-                drawRoundRect(
-                    color = Color.White.copy(alpha = 0.45f),
-                    topLeft = Offset(bodyW + 1.dp.toPx(), size.height * 0.3f),
-                    size = Size(nub, size.height * 0.4f),
-                    cornerRadius = CornerRadius(nub, nub),
-                )
-                val text = measurer.measure(
-                    label,
-                    TextStyle(
-                        color = Color(0xFF1B1B1F),
-                        fontSize = 10.5.sp,
-                        fontFamily = PixelFont,
-                        fontWeight = FontWeight.Bold,
-                        platformStyle = PlatformTextStyle(includeFontPadding = false),
-                    ),
-                )
-                drawText(
-                    text,
-                    topLeft = Offset((bodyW - text.size.width) / 2f, (size.height - text.size.height) / 2f),
-                )
-            }
-    )
 }
 
 private val TorchYellow = Color(0xFFFFD60A)
@@ -1529,7 +1378,7 @@ private fun NotificationCard(
     Column(
         modifier = modifier
             .width(width)
-            .padding(start = 14.dp, end = 14.dp, bottom = 14.dp, top = cfg.height.dp + 6.dp),
+            .padding(start = 20.dp, end = 20.dp, bottom = 20.dp, top = cfg.height.dp + 14.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().noRippleClick {
@@ -1548,12 +1397,12 @@ private fun NotificationCard(
                     bitmap = remember(icon) { icon.asImageBitmap() },
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.size(42.dp).clip(CircleShape),
+                    modifier = Modifier.size(46.dp).clip(CircleShape),
                 )
             } else {
-                Box(Modifier.size(42.dp).glass(CircleShape))
+                Box(Modifier.size(46.dp).glass(CircleShape))
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(event.appName, color = Dim, fontSize = 11.sp, maxLines = 1)
                 Text(
@@ -1564,10 +1413,12 @@ private fun NotificationCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                Spacer(Modifier.height(2.dp))
                 Text(
                     event.text,
                     color = Color(0xFFD8D8DE),
                     fontSize = 13.sp,
+                    lineHeight = 18.sp,
                     maxLines = if (n.replying) 3 else 2,
                     overflow = TextOverflow.Ellipsis,
                 )

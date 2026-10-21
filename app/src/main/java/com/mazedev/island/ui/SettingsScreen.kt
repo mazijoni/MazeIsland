@@ -369,15 +369,10 @@ private fun IslandCard() {
         )
 
         RealStatusBarRow(cfg.realStatusBar)
-        if (!cfg.realStatusBar) ToggleRow("Clock & battery beside the camera when open", cfg.statusInIsland) { v ->
+        if (!cfg.realStatusBar) ToggleRow("Clock & battery in the open island", cfg.statusInIsland) { v ->
             Prefs.updateIsland { it.copy(statusInIsland = v) }
             IslandPreview.show(PreviewMode.EXPANDED)
             IslandPreview.release(2_500)
-        }
-        if (cfg.statusInIsland && !cfg.realStatusBar) {
-            LabeledSlider("Clock & battery up / down", cfg.statusOffsetY, -10f..12f, PreviewMode.EXPANDED) { v ->
-                Prefs.updateIsland { it.copy(statusOffsetY = v) }
-            }
         }
         ToggleRow("Pop up all notifications (not just messages)", cfg.showAllNotifications) { v ->
             Prefs.updateIsland { it.copy(showAllNotifications = v) }
